@@ -16,3 +16,6 @@ export interface Cluster {
   name: string;
   serverIds: string[];
 }
+
+// For frontend state
+export type ClusterState = Cluster & { editing?: boolean };

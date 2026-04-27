@@ -21,11 +21,13 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Server } from './types';
+import { Server, Cluster, ClusterState } from './types';
 
 export default function App() {
   const [servers, setServers] = useState<Server[]>([]);
+  const [clusters, setClusters] = useState<ClusterState[]>([]);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isCreateClusterModalOpen, setIsCreateClusterModalOpen] = useState(false);
   const [activeTerminal, setActiveTerminal] = useState<Server | null>(null);
   const [autoDeployOnConnect, setAutoDeployOnConnect] = useState<null | 'full'>(null);
   const [autoRunOnConnect, setAutoRunOnConnect] = useState<
@@ -43,11 +45,76 @@ export default function App() {
   const [serverSettings, setServerSettings] = useState<Server | null>(null);
   const [loading, setLoading] = useState(true);
   const [currentView, setCurrentView] = useState<'fleet' | 'terminals' | 'clusters' | 'storage' | 'settings'>('fleet');
+  const [deployingSample, setDeployingSample] = useState<string | null>(null);
+  const [deployResult, setDeployResult] = useState<any>(null);
+  const [isProdSimulationOpen, setIsProdSimulationOpen] = useState(false);
+  const [simulationCluster, setSimulationCluster] = useState<ClusterState | null>(null);
+  const [nuclearTarget, setNuclearTarget] = useState<Server | null>(null);
+  const [nuclearStep, setNuclearStep] = useState<0 | 1 | 2>(0);
+  const [destroying, setDestroying] = useState<string | null>(null);
 
   useEffect(() => {
     fetchServers();
+    fetchClusters();
   }, []);
 
+  // Fetch clusters from backend
+  const fetchClusters = async () => {
+    try {
+      const res = await fetch('/api/clusters');
+      const data = await res.json();
+      setClusters(data);
+    } catch (error) {
+      console.error('Failed to fetch clusters', error);
+    }
+  };
+
+  // Add cluster
+  const addCluster = async (clusterData: Partial<ClusterState>) => {
+    try {
+      const res = await fetch('/api/clusters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(clusterData),
+      });
+      const newCluster = await res.json();
+      setClusters([...clusters, newCluster]);
+    } catch (error) {
+      console.error('Failed to add cluster', error);
+    }
+  };
+
+  // Update cluster
+  const updateCluster = async (id: string, clusterData: Partial<ClusterState>) => {
+    try {
+      const res = await fetch(`/api/clusters/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(clusterData),
+      });
+      const updated = await res.json();
+      setClusters(clusters.map(c => c.id === id ? updated : c));
+    } catch (error) {
+      console.error('Failed to update cluster', error);
+    }
+  };
+
+  // Delete cluster
+  const deleteCluster = async (id: string) => {
+    if (!confirm('Are you sure you want to remove this cluster?')) return;
+    try {
+      await fetch(`/api/clusters/${id}`, { method: 'DELETE' });
+      setClusters(clusters.filter(c => c.id !== id));
+    } catch (error) {
+      console.error('Failed to delete cluster', error);
+    }
+  };
+
+  useEffect(() => {
+    if (currentView === 'clusters') fetchClusters();
+  }, [currentView]);
+
+  // Existing effect
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { serverId?: string } | undefined;
@@ -148,14 +215,34 @@ export default function App() {
       console.error('Failed to add server', error);
     }
   };
-
   const deleteServer = async (id: string) => {
-    if (!confirm('Are you sure you want to remove this server?')) return;
+    if (!confirm('Are you sure you want to remove this server from the control plane? (This will NOT uninstall software)')) return;
     try {
       await fetch(`/api/servers/${id}`, { method: 'DELETE' });
       setServers(servers.filter(s => s.id !== id));
     } catch (error) {
       console.error('Failed to delete server', error);
+    }
+  };
+
+  const destroyServer = async (id: string) => {
+    setDestroying(id);
+    try {
+      const res = await fetch(`/api/servers/${id}/destroy`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setServers(servers.filter(s => s.id !== id));
+        alert('Server has been wiped and removed from fleet.');
+      } else {
+        alert('Cleanup failed: ' + data.error);
+      }
+    } catch (error) {
+      console.error('Failed to destroy server', error);
+      alert('A connection error occurred during destruction.');
+    } finally {
+      setDestroying(null);
+      setNuclearTarget(null);
+      setNuclearStep(0);
     }
   };
 
@@ -234,6 +321,10 @@ export default function App() {
                     onDelete={deleteServer}
                     onTerminal={() => setActiveTerminal(server)}
                     onSettings={() => setServerSettings(server)}
+                    onNuke={() => {
+                      setNuclearTarget(server);
+                      setNuclearStep(1);
+                    }}
                     history={telemetryHistoryByServerId[server.id] || []}
                   />
                 ))
@@ -297,7 +388,7 @@ export default function App() {
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                <div
-                 onClick={() => setCurrentView('fleet')}
+                 onClick={() => setIsCreateClusterModalOpen(true)}
                  className="bg-white border border-gray-200 rounded-2xl p-8 hover:border-blue-500 transition-colors cursor-pointer group"
                  role="button"
                  tabIndex={0}
@@ -321,6 +412,77 @@ export default function App() {
                   <p className="text-sm text-gray-400 font-medium">Show RX/TX totals across your fleet.</p>
                </div>
             </div>
+            
+            {clusters.length > 0 ? (
+              <div className="mt-8">
+                <h3 className="text-xl font-bold mb-4">Your Clusters</h3>
+                <div className="grid grid-cols-1 gap-4">
+                  {clusters.map(cluster => (
+                    <div key={cluster.id} className="bg-white border border-gray-200 rounded-xl p-6 flex flex-col md:flex-row items-center justify-between gap-4">
+                      <div>
+                        <div className="font-bold text-lg">{cluster.name}</div>
+                        <div className="text-sm text-gray-500">{cluster.serverIds.length} nodes attached</div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={async () => {
+                            setDeployingSample(cluster.id);
+                            setDeployResult(null);
+                            const res = await fetch(`/api/clusters/${cluster.id}/deploy-sample`, { method: 'POST' });
+                            const data = await res.json();
+                            setDeployResult(data);
+                            setDeployingSample(null);
+                          }}
+                          disabled={!!deployingSample}
+                          className={`px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-sm ${deployingSample === cluster.id ? 'bg-green-200 text-green-900 cursor-wait' : 'bg-green-600 text-white hover:bg-green-700'}`}
+                        >
+                          {deployingSample === cluster.id ? 'Deploying...' : 'Deploy Prod Simulation'}
+                        </button>
+                        <button
+                          onClick={async () => {
+                            setDeployingSample(cluster.id + '-load');
+                            const res = await fetch(`/api/clusters/${cluster.id}/simulate-load`, { method: 'POST' });
+                            const data = await res.json();
+                            setDeployResult(data);
+                            setDeployingSample(null);
+                            setSimulationCluster(cluster);
+                            setIsProdSimulationOpen(true);
+                          }}
+                          disabled={!!deployingSample}
+                          className={`px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-sm ${deployingSample === cluster.id + '-load' ? 'bg-orange-200 text-orange-900 cursor-wait' : 'bg-orange-500 text-white hover:bg-orange-600'}`}
+                        >
+                          {deployingSample === cluster.id + '-load' ? 'Simulating...' : 'Run Simulation'}
+                        </button>
+                        <button
+                          onClick={() => deleteCluster(cluster.id)}
+                          className="px-3 py-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                        >
+                          <Trash2 className="w-5 h-5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="mt-8 text-center text-gray-400 font-medium py-12 border-2 border-dashed border-gray-200 rounded-2xl">
+                No clusters created yet. Click "Create K3s Cluster" to start.
+              </div>
+            )}
+            
+            {deployResult && (
+              <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-xl text-xs text-left font-mono text-green-900 whitespace-pre-wrap">
+                <div className="font-bold mb-1">Prod Simulation Deploy Result</div>
+                {deployResult.results.map((r: any, i: number) => (
+                  <div key={i} className="mb-2">
+                    <div><b>Server:</b> {r.serverId}</div>
+                    <div><b>Exit:</b> {r.code ?? '—'}</div>
+                    <div><b>Output:</b> <span className="break-all">{r.output || '—'}</span></div>
+                    {r.error && <div className="text-red-600"><b>Error:</b> {r.error}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         );
       case 'storage':
@@ -552,6 +714,19 @@ export default function App() {
       </AnimatePresence>
 
       <AnimatePresence>
+        {isCreateClusterModalOpen && (
+          <CreateClusterModal
+            servers={servers}
+            onCreate={async (data) => {
+              await addCluster(data);
+              setIsCreateClusterModalOpen(false);
+            }}
+            onClose={() => setIsCreateClusterModalOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {isQuickDeployOpen && (
           <QuickDeployModal
             servers={servers}
@@ -583,8 +758,45 @@ export default function App() {
       </AnimatePresence>
 
       <AnimatePresence>
+        {nuclearTarget && nuclearStep === 1 && (
+          <NuclearWarningModal 
+            server={nuclearTarget}
+            onConfirm={() => setNuclearStep(2)}
+            onClose={() => {
+              setNuclearTarget(null);
+              setNuclearStep(0);
+            }}
+          />
+        )}
+        {nuclearTarget && nuclearStep === 2 && (
+          <NuclearConfirmationModal 
+            server={nuclearTarget}
+            isDestroying={destroying === nuclearTarget.id}
+            onConfirm={() => destroyServer(nuclearTarget.id)}
+            onClose={() => {
+              setNuclearTarget(null);
+              setNuclearStep(0);
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isProdSimulationOpen && simulationCluster && (
+          <ProdSimulationOverlay 
+            cluster={simulationCluster} 
+            onClose={() => {
+              setIsProdSimulationOpen(false);
+              setSimulationCluster(null);
+            }} 
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {isTrafficModalOpen && (
           <TrafficModal
+            history={telemetryHistoryByServerId}
             onClose={() => setIsTrafficModalOpen(false)}
           />
         )}
@@ -619,6 +831,12 @@ export default function App() {
                 command: 'sudo sh -lc \'du -h -d2 /var/log 2>/dev/null | sort -h | tail -n 30\'',
               });
               setActiveTerminal(serverSettings);
+            }}
+            onNuke={() => {
+              const target = serverSettings;
+              setServerSettings(null);
+              setNuclearTarget(target);
+              setNuclearStep(1);
             }}
           />
         )}
@@ -667,17 +885,20 @@ function ServerCard({
   onDelete,
   onTerminal,
   onSettings,
+  onNuke,
   history,
 }: {
   server: Server;
   onDelete: (id: string) => void;
   onTerminal: () => void;
   onSettings: () => void;
+  onNuke: () => void;
   history: Array<{ ts: number; cpu?: number; ram?: number; load1?: number; rxMb?: number; txMb?: number }>;
 }) {
   const [telemetry, setTelemetry] = useState<{ cpu?: string, ram?: string, disk?: string, docker?: string, k3s?: string } | null>(null);
   const [fetching, setFetching] = useState(false);
   const [monitoringOpen, setMonitoringOpen] = useState(false);
+  const [prodTest, setProdTest] = useState<{ running: boolean; result?: { code: number; output: string; error: string } } | null>(null);
 
   useEffect(() => {
     fetchTelemetry();
@@ -820,11 +1041,41 @@ function ServerCard({
       </div>
 
       <div className="flex items-center gap-2">
-         <button 
+         <button
            onClick={onTerminal}
            className="flex-1 text-[11px] font-bold uppercase tracking-widest py-2.5 rounded-lg bg-gray-50 border border-gray-100 hover:bg-blue-600 hover:text-white hover:border-blue-600 transition-all text-gray-500 shadow-sm"
          >
            Access Node
+         </button>
+         <button
+           onClick={async () => {
+             setProdTest({ running: true });
+             try {
+               const res = await fetch(`/api/servers/${server.id}/exec`, {
+                 method: 'POST',
+                 headers: { 'Content-Type': 'application/json' },
+                 body: JSON.stringify({ command: [
+                   'echo "=== PROD TEST ==="',
+                   'uname -a',
+                   'echo "Node.js:"; node -v || echo "Not installed"',
+                   'echo "Docker:"; docker --version || echo "Not installed"',
+                   'echo "K3s:"; k3s --version 2>/dev/null || echo "Not installed"',
+                   'echo "Disk usage:"; df -h / | tail -1',
+                   'echo "CPU info:"; nproc || echo "nproc not available"',
+                   'echo "Memory:"; free -h || cat /proc/meminfo | grep Mem',
+                 ].join(' && ') })
+               });
+               const data = await res.json();
+               setProdTest({ running: false, result: data });
+             } catch (e) {
+               setProdTest({ running: false, result: { code: -1, output: '', error: String(e) } });
+             }
+           }}
+           className={`p-2.5 rounded-lg border font-bold transition-all shadow-sm ${prodTest?.running ? 'bg-green-200 border-green-300 text-green-900 cursor-wait' : 'bg-white border-gray-100 text-green-700 hover:bg-green-50 hover:border-green-300'}`}
+           title="Prod Test"
+           disabled={prodTest?.running}
+         >
+           {prodTest?.running ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Prod Test'}
          </button>
          <button
            onClick={onSettings}
@@ -833,7 +1084,83 @@ function ServerCard({
          >
             <Settings className="w-4 h-4 text-gray-400" />
          </button>
+         <button
+            onClick={onNuke}
+            className="p-2.5 bg-red-50 border border-red-100 rounded-lg hover:bg-red-100 transition-colors"
+            title="Nuke Server"
+          >
+             <Shield className="w-4 h-4 text-red-500" />
+          </button>
       </div>
+      {prodTest?.result && (
+        <div className="mt-3 p-4 rounded-xl border border-emerald-200 bg-emerald-50/50 text-xs shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 text-emerald-700 font-bold uppercase tracking-wider text-[10px]">
+              <Activity className="w-3 h-3" />
+              Prod Test Result
+            </div>
+            <button 
+              onClick={() => setProdTest(null)}
+              className="text-[10px] font-bold text-emerald-600 hover:text-emerald-800 uppercase tracking-tight"
+            >
+              Hide
+            </button>
+          </div>
+          
+          <div className="flex items-center gap-2 mb-3 px-2 py-1 bg-white/50 border border-emerald-100 rounded-lg w-fit">
+            <span className="text-emerald-600 font-bold">Status:</span>
+            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${prodTest.result.code === 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+              {prodTest.result.code === 0 ? 'PASS' : 'FAIL'} (Code: {prodTest.result.code})
+            </span>
+          </div>
+
+          {prodTest.result.output && (
+            <div className="grid grid-cols-1 gap-2.5">
+              {(() => {
+                const lines = prodTest.result.output.split(/\r?\n/);
+                const checks = [
+                  { label: 'Kernel', key: 'uname', match: /^Linux|^Darwin/ },
+                  { label: 'Node.js', key: 'Node.js', match: /^Node\.js:/ },
+                  { label: 'Docker', key: 'Docker', match: /^Docker:/ },
+                  { label: 'K3s', key: 'K3s', match: /^K3s:/ },
+                  { label: 'Disk usage', key: 'Disk usage', match: /^Disk usage:/ },
+                  { label: 'CPU info', key: 'CPU info', match: /^CPU info:/ },
+                  { label: 'Memory', key: 'Memory', match: /^Memory:/ },
+                ];
+                const results: Record<string, string> = {};
+                let lastKey = '';
+                for (const line of lines) {
+                  for (const check of checks) {
+                    if (check.match.test(line)) {
+                      lastKey = check.key;
+                      results[lastKey] = line.replace(check.match, '').trim();
+                    }
+                  }
+                  if (lastKey && !checks.some(c => c.match.test(line))) {
+                    results[lastKey] += '\n' + line;
+                  }
+                }
+                return checks.map(check => (
+                  <div key={check.key} className="group/row flex flex-col gap-1 p-2 bg-white border border-emerald-100 rounded-lg hover:border-emerald-300 transition-colors">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-emerald-800 text-[10px] uppercase tracking-wide">{check.label}</span>
+                      {results[check.key] ? (
+                        <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                      ) : (
+                        <AlertCircle className="w-3 h-3 text-amber-500" />
+                      )}
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-600 truncate group-hover/row:whitespace-pre-wrap group-hover/row:break-all">
+                      {results[check.key] || 'Not detected'}
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+          )}
+          {prodTest.result.error && <div className="text-red-600 mt-2"><b>Error:</b> {prodTest.result.error}</div>}
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -1149,15 +1476,96 @@ function InfoModal({
   );
 }
 
-function TrafficModal({ onClose }: { onClose: () => void }) {
+function TrafficModal({ 
+  history, 
+  onClose 
+}: { 
+  history: Record<string, Array<{ ts: number; rxMb?: number; txMb?: number }>>; 
+  onClose: () => void 
+}) {
+  const currentTotalRx = Object.values(history).reduce((acc, srvHist) => {
+    const last = srvHist[srvHist.length - 1];
+    return acc + (last?.rxMb || 0);
+  }, 0);
+
+  const currentTotalTx = Object.values(history).reduce((acc, srvHist) => {
+    const last = srvHist[srvHist.length - 1];
+    return acc + (last?.txMb || 0);
+  }, 0);
+
+  const maxLen = Math.max(0, ...Object.values(history).map(h => h.length));
+  
+  if (maxLen === 0) {
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-gray-900/30 backdrop-blur-sm">
+        <motion.div initial={{ scale: 0.95, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 20 }} className="bg-white border border-gray-200 rounded-2xl w-full max-w-lg p-10 text-center shadow-2xl">
+          <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-6">
+            <Activity className="w-8 h-8 text-blue-500 animate-pulse" />
+          </div>
+          <h3 className="text-xl font-bold mb-2">No Traffic History</h3>
+          <p className="text-gray-500 text-sm mb-8 leading-relaxed">
+            Traffic charts are populated from telemetry data. Connect your hosts and wait for the first sync (30s) to see real-time RX/TX totals across your fleet.
+          </p>
+          <button onClick={onClose} className="w-full py-3 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-700 transition-all">
+            Got it
+          </button>
+        </motion.div>
+      </motion.div>
+    );
+  }
+
+  const rxSeries = [];
+  const txSeries = [];
+  for (let i = 0; i < maxLen; i++) {
+    let rxSum = 0;
+    let txSum = 0;
+    for (const srvHist of Object.values(history)) {
+      const idx = srvHist.length - maxLen + i;
+      if (idx >= 0 && idx < srvHist.length) {
+         rxSum += (srvHist[idx].rxMb || 0);
+         txSum += (srvHist[idx].txMb || 0);
+      }
+    }
+    rxSeries.push(rxSum);
+    txSeries.push(txSum);
+  }
+
   return (
-    <InfoModal
-      title="Traffic Overview"
-      body="Traffic charts are now fed by net_rx_mb / net_tx_mb telemetry (fleet totals will be plotted next)."
-      primaryLabel="Close"
-      onPrimary={onClose}
-      onClose={onClose}
-    />
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-gray-900/30 backdrop-blur-sm">
+      <motion.div initial={{ scale: 0.95, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 20 }} className="bg-white border border-gray-200 rounded-2xl w-full max-w-2xl p-7 shadow-2xl">
+        <div className="flex items-center justify-between mb-4">
+          <div className="font-bold text-gray-900">Fleet Traffic Overview</div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-900 transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        
+        <p className="text-xs text-gray-500 mb-6 px-1">Visualizing aggregate network throughput across {Object.keys(history).length} active nodes.</p>
+        
+        <div className="grid grid-cols-2 gap-6 mt-6">
+          <div className="bg-gray-50 border border-gray-100 rounded-xl p-4">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-gray-500">Total RX</span>
+              <span className="text-lg font-mono font-bold text-blue-600">{currentTotalRx.toFixed(1)} MB</span>
+            </div>
+            <Sparkline values={rxSeries} color="#2563eb" height={60} />
+          </div>
+          <div className="bg-gray-50 border border-gray-100 rounded-xl p-4">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-gray-500">Total TX</span>
+              <span className="text-lg font-mono font-bold text-purple-600">{currentTotalTx.toFixed(1)} MB</span>
+            </div>
+            <Sparkline values={txSeries} color="#a855f7" height={60} />
+          </div>
+        </div>
+
+        <div className="pt-6 flex justify-end">
+          <button onClick={onClose} className="py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold transition-all shadow-lg shadow-blue-600/20">
+            Close
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -1177,6 +1585,7 @@ function ServerSettingsModal({
   onQuickDeploy: () => void;
   onVerify: () => void;
   onAnalyzeLogs: () => void;
+  onNuke: () => void;
 }) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-gray-900/30 backdrop-blur-sm">
@@ -1207,6 +1616,12 @@ function ServerSettingsModal({
           </button>
           <button onClick={onAnalyzeLogs} className="py-3 px-4 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 font-bold text-sm">
             Analyze Logs
+          </button>
+          <button 
+            onClick={onNuke} 
+            className="py-3 px-4 rounded-xl border-2 border-red-100 bg-red-50 hover:bg-red-100 font-bold text-sm text-red-600 flex items-center justify-center gap-2"
+          >
+            <Shield className="w-4 h-4" /> Nuke Server
           </button>
         </div>
       </motion.div>
@@ -1399,5 +1814,407 @@ function StorageNode({ server }: { server: Server }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function CreateClusterModal({ servers, onCreate, onClose }: { servers: Server[], onCreate: (data: Partial<ClusterState>) => void, onClose: () => void }) {
+  const [name, setName] = useState('');
+  const [selectedServerIds, setSelectedServerIds] = useState<string[]>([]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name) return;
+    onCreate({ name, serverIds: selectedServerIds });
+  };
+
+  const toggleServer = (id: string) => {
+    setSelectedServerIds(prev => 
+      prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
+    );
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-gray-900/20 backdrop-blur-sm"
+    >
+      <motion.div 
+        initial={{ scale: 0.95, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.95, y: 20 }}
+        className="bg-white border border-gray-200 rounded-2xl w-full max-w-lg p-8 shadow-2xl"
+      >
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h2 className="text-xl font-bold tracking-tight">Create K3s Cluster</h2>
+            <p className="text-sm text-gray-500 font-medium">Group servers to form a cluster.</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-900 transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <Input 
+            label="Cluster Name" 
+            value={name} 
+            onChange={e => setName(e.target.value)} 
+            placeholder="e.g. Production Cluster"
+            required
+          />
+          
+          <div className="space-y-1.5 flex-1">
+            <label className="text-[10px] uppercase font-bold text-gray-400 tracking-wider ml-1">Select Nodes</label>
+            <div className="max-h-48 overflow-y-auto border border-gray-100 rounded-xl p-2 bg-gray-50">
+              {servers.length === 0 ? (
+                <div className="text-sm text-gray-400 text-center py-4">No servers available. Add hosts first.</div>
+              ) : (
+                servers.map(s => (
+                  <label key={s.id} className="flex items-center gap-3 p-2 hover:bg-gray-100 rounded-lg cursor-pointer transition-colors">
+                    <input 
+                      type="checkbox" 
+                      checked={selectedServerIds.includes(s.id)} 
+                      onChange={() => toggleServer(s.id)}
+                      className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    />
+                    <div>
+                      <div className="font-bold text-sm text-gray-900">{s.name}</div>
+                      <div className="text-xs text-gray-500">{s.host}</div>
+                    </div>
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="pt-4 flex gap-3">
+            <button 
+              type="button" 
+              onClick={onClose}
+              className="flex-1 py-3 px-4 rounded-xl border border-gray-100 bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold transition-all"
+            >
+              Cancel
+            </button>
+            <button 
+              type="submit" 
+              disabled={!name}
+              className="flex-1 py-3 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold transition-all shadow-lg shadow-blue-600/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Create Cluster
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function ProdSimulationOverlay({ cluster, onClose }: { cluster: ClusterState, onClose: () => void }) {
+  const [activeTab, setActiveTab] = useState<'topology' | 'logs' | 'metrics'>('topology');
+  const [simulatedLoad, setSimulatedLoad] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setSimulatedLoad(prev => {
+        const next = prev + (Math.random() * 10 - 5);
+        return Math.max(10, Math.min(95, next));
+      });
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4 md:p-12 bg-slate-950/90 backdrop-blur-md"
+    >
+      <motion.div 
+        initial={{ scale: 0.9, y: 40, opacity: 0 }}
+        animate={{ scale: 1, y: 0, opacity: 1 }}
+        exit={{ scale: 0.9, y: 40, opacity: 0 }}
+        className="bg-slate-900 border border-white/10 rounded-[2.5rem] w-full max-w-6xl h-full max-h-[850px] flex flex-col shadow-[0_0_100px_rgba(0,0,0,0.5)] overflow-hidden text-slate-100"
+      >
+        {/* Header */}
+        <div className="h-20 border-b border-white/5 flex items-center justify-between px-10 shrink-0 bg-white/5">
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/20">
+                <Globe className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h2 className="text-xl font-bold tracking-tight">{cluster.name}</h2>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-500/80">Production Simulation Active</span>
+                </div>
+              </div>
+            </div>
+            
+            <div className="h-8 w-px bg-white/10 mx-2" />
+            
+            <div className="flex gap-1 bg-slate-800/50 p-1 rounded-xl border border-white/5">
+              {(['topology', 'logs', 'metrics'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-5 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${activeTab === tab ? 'bg-white/10 text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <button 
+            onClick={onClose}
+            className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center hover:bg-white/5 transition-colors"
+          >
+            <X className="w-5 h-5 text-slate-400" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-hidden flex flex-col p-10 gap-8">
+          {activeTab === 'topology' && (
+            <div className="flex-1 flex gap-8">
+              {/* Left: Load Balancer / Ingress */}
+              <div className="w-1/3 flex flex-col gap-6">
+                <div className="bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col items-center justify-center text-center group hover:border-blue-500/30 transition-colors">
+                  <div className="w-16 h-16 bg-blue-500/10 rounded-3xl flex items-center justify-center mb-6 border border-blue-500/20">
+                    <Globe className="w-8 h-8 text-blue-400" />
+                  </div>
+                  <h3 className="font-bold text-lg mb-2">Ingress Controller</h3>
+                  <p className="text-xs text-slate-500 mb-6 font-medium">Auto-scaling NGINX Ingress Proxying</p>
+                  <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
+                    <motion.div 
+                      animate={{ width: `${simulatedLoad}%` }} 
+                      className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]" 
+                    />
+                  </div>
+                  <div className="mt-2 text-[10px] font-mono text-slate-400">LOAD: {simulatedLoad.toFixed(1)}%</div>
+                </div>
+
+                <div className="flex-1 bg-white/5 border border-white/10 rounded-[2rem] p-8 overflow-hidden relative">
+                   <div className="flex items-center justify-between mb-6">
+                      <h3 className="font-bold uppercase tracking-widest text-xs text-slate-400">Traffic Flow</h3>
+                      <div className="flex gap-1">
+                        <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                        <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping" />
+                      </div>
+                   </div>
+                   <div className="space-y-4">
+                     {[1,2,3,4,5].map(i => (
+                       <div key={i} className="flex items-center gap-4">
+                         <div className="w-2 h-2 rounded-full bg-blue-500/30" />
+                         <div className="flex-1 h-px bg-gradient-to-r from-blue-500/50 to-transparent" />
+                         <span className="text-[9px] font-mono text-slate-600">REQ_{Math.floor(Math.random()*1000)} OK</span>
+                       </div>
+                     ))}
+                   </div>
+                   <div className="absolute inset-0 bg-gradient-to-b from-transparent to-slate-900/50 pointer-events-none" />
+                </div>
+              </div>
+
+              {/* Center: Cluster Nodes */}
+              <div className="flex-1 flex flex-col">
+                <div className="grid grid-cols-2 gap-6 h-full">
+                  {cluster.serverIds.map((id, idx) => (
+                    <div key={id} className="bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between hover:bg-white/[0.07] transition-all group">
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <div className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-1">Worker Node 0{idx+1}</div>
+                          <div className="font-bold text-lg">{id.substring(0, 8)}</div>
+                        </div>
+                        <div className="w-8 h-8 bg-emerald-500/10 rounded-xl flex items-center justify-center border border-emerald-500/20 text-emerald-400">
+                          <CheckCircle2 className="w-4 h-4" />
+                        </div>
+                      </div>
+
+                      <div className="space-y-6">
+                        <div className="space-y-2">
+                          <div className="flex justify-between text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                            <span>Pod Usage</span>
+                            <span>{Math.floor(Math.random() * 20 + 40)}%</span>
+                          </div>
+                          <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                             <div className="h-full bg-emerald-500/50 w-[60%]" />
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2">
+                          {[1,2,3].map(p => (
+                            <div key={p} className="flex-1 aspect-square bg-slate-800/50 rounded-xl flex items-center justify-center border border-white/5">
+                              <Database className="w-4 h-4 text-slate-500" />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {cluster.serverIds.length < 4 && Array.from({ length: 4 - cluster.serverIds.length }).map((_, i) => (
+                    <div key={i} className="bg-slate-950/30 border border-white/[0.02] border-dashed rounded-[2rem] flex items-center justify-center text-slate-800">
+                       <Plus className="w-8 h-8 opacity-10" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'logs' && (
+            <div className="flex-1 bg-slate-950 border border-white/10 rounded-[2rem] p-8 font-mono text-sm overflow-y-auto terminal-scrollbar">
+              <div className="text-emerald-500/50 mb-4 font-bold">--- INITIALIZING PRODUCTION SIMULATION LOGS ---</div>
+              {[...Array(20)].map((_, i) => (
+                <div key={i} className="mb-2 flex gap-4 text-xs">
+                  <span className="text-slate-600">[{new Date().toLocaleTimeString()}]</span>
+                  <span className="text-blue-400 font-bold uppercase tracking-tighter w-12 shrink-0">info</span>
+                  <span className="text-slate-300">Cluster {cluster.name} scaled to {(Math.random() * 10).toFixed(0)} pods. Ingress health check passed.</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activeTab === 'metrics' && (
+            <div className="flex-1 grid grid-cols-3 gap-6">
+               <div className="bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between">
+                  <h4 className="font-bold text-xs uppercase tracking-widest text-slate-500">Request Rate</h4>
+                  <div className="flex-1 flex items-end gap-1 mb-6">
+                    {Array.from({ length: 20 }).map((_, i) => (
+                      <div key={i} className="flex-1 bg-blue-500/20 rounded-t-sm border-t border-blue-500/50" style={{ height: `${Math.random() * 60 + 20}%` }} />
+                    ))}
+                  </div>
+                  <div className="text-4xl font-light">{(Math.random() * 100 + 400).toFixed(0)}<span className="text-sm text-slate-500 ml-2">req/s</span></div>
+               </div>
+               <div className="bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between">
+                  <h4 className="font-bold text-xs uppercase tracking-widest text-slate-500">Latency (p99)</h4>
+                  <div className="flex-1 flex items-end gap-1 mb-6">
+                    {Array.from({ length: 20 }).map((_, i) => (
+                      <div key={i} className="flex-1 bg-purple-500/20 rounded-t-sm border-t border-purple-500/50" style={{ height: `${Math.random() * 30 + 10}%` }} />
+                    ))}
+                  </div>
+                  <div className="text-4xl font-light">{(Math.random() * 5 + 12).toFixed(1)}<span className="text-sm text-slate-500 ml-2">ms</span></div>
+               </div>
+               <div className="bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between">
+                  <h4 className="font-bold text-xs uppercase tracking-widest text-slate-500">Error Rate</h4>
+                  <div className="flex-1 flex items-center justify-center mb-6">
+                     <div className="text-6xl font-black text-emerald-500 opacity-20">0.0%</div>
+                  </div>
+                  <div className="text-4xl font-light text-emerald-400">0.00<span className="text-sm text-emerald-500/50 ml-2">errors</span></div>
+               </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="h-20 border-t border-white/5 flex items-center justify-between px-10 shrink-0 bg-white/5">
+           <div className="flex items-center gap-6">
+             <div className="flex items-center gap-2">
+               <div className="w-2 h-2 rounded-full bg-blue-500" />
+               <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Endpoint: api.kubecast.cloud</span>
+             </div>
+             <div className="flex items-center gap-2">
+               <div className="w-2 h-2 rounded-full bg-emerald-500" />
+               <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Region: us-east-1 (Global)</span>
+             </div>
+           </div>
+           
+           <div className="flex items-center gap-4">
+              <button className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold hover:bg-white/10 transition-colors uppercase tracking-widest">
+                Export Report
+              </button>
+              <button 
+                onClick={onClose}
+                className="px-6 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 transition-all uppercase tracking-widest shadow-lg shadow-blue-600/20"
+              >
+                Terminate Simulation
+              </button>
+           </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+function NuclearWarningModal({ server, onConfirm, onClose }: { server: Server, onConfirm: () => void, onClose: () => void }) {
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[70] flex items-center justify-center p-8 bg-gray-900/40 backdrop-blur-sm">
+      <motion.div initial={{ scale: 0.95, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 20 }} className="bg-white border border-gray-200 rounded-[2rem] w-full max-w-md p-10 shadow-2xl text-center">
+        <div className="w-16 h-16 bg-amber-50 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-amber-100">
+           <AlertCircle className="w-8 h-8 text-amber-500" />
+        </div>
+        <h2 className="text-xl font-bold mb-2 uppercase tracking-tight">Destructive Action</h2>
+        <p className="text-sm text-gray-500 mb-8 leading-relaxed">
+          You are about to enter the <span className="text-red-600 font-bold">Nuclear Protocol</span> for <b>{server.name}</b>. This will permanently uninstall all cluster components.
+        </p>
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 py-3 font-bold text-gray-500 hover:bg-gray-50 rounded-xl transition-all">Cancel</button>
+          <button onClick={onConfirm} className="flex-1 py-3 bg-gray-900 text-white font-bold rounded-xl hover:bg-black transition-all">Continue</button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function NuclearConfirmationModal({ server, isDestroying, onConfirm, onClose }: { server: Server, isDestroying: boolean, onConfirm: () => void, onClose: () => void }) {
+  const [typedHost, setTypedHost] = useState('');
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[75] flex items-center justify-center p-8 bg-red-950/60 backdrop-blur-md"
+    >
+      <motion.div 
+        initial={{ scale: 0.95, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.95, y: 20 }}
+        className="bg-white border border-red-100 rounded-[2rem] w-full max-w-lg p-10 shadow-2xl relative overflow-hidden"
+      >
+        <div className="absolute top-0 left-0 w-full h-2 bg-red-600 animate-pulse" />
+        
+        <div className="flex flex-col items-center text-center">
+          <div className="w-20 h-20 bg-red-100 rounded-3xl flex items-center justify-center mb-8 border-4 border-red-50">
+            <Shield className="w-10 h-10 text-red-600 animate-bounce" />
+          </div>
+          
+          <h2 className="text-2xl font-black text-gray-900 mb-2 uppercase tracking-tight">Final Authorization</h2>
+          <p className="text-gray-500 text-sm mb-8 leading-relaxed">
+            This is the <span className="font-bold text-red-600 underline">LAST WARNING</span>. System wipe on <span className="font-mono bg-gray-100 px-1.5 py-0.5 rounded text-gray-800">{server.host}</span> cannot be undone.
+          </p>
+
+          <div className="w-full space-y-4 mb-8">
+            <div className="text-[10px] uppercase font-bold text-gray-400 tracking-widest">Type the host to confirm</div>
+            <input 
+              value={typedHost}
+              onChange={e => setTypedHost(e.target.value)}
+              placeholder={server.host}
+              className="w-full bg-red-50/50 border-2 border-red-100 rounded-xl px-4 py-4 text-center font-mono font-bold text-red-900 outline-none focus:border-red-600 transition-all placeholder:text-red-200 shadow-inner"
+              autoFocus
+            />
+          </div>
+
+          <div className="flex gap-3 w-full">
+            <button 
+              onClick={onClose}
+              disabled={isDestroying}
+              className="flex-1 py-4 px-4 rounded-xl bg-gray-50 border border-gray-100 hover:bg-gray-100 text-gray-600 font-bold transition-all"
+            >
+              Abort
+            </button>
+            <button 
+              onClick={onConfirm}
+              disabled={typedHost !== server.host || isDestroying}
+              className={`flex-2 py-4 px-8 rounded-xl font-bold text-white transition-all shadow-lg shadow-red-600/20 ${typedHost === server.host && !isDestroying ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-200 cursor-not-allowed'}`}
+            >
+              {isDestroying ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Confirm Destruction'}
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }

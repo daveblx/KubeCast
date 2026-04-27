@@ -6,6 +6,8 @@ import { Client } from "ssh2";
 import { WebSocketServer } from "ws";
 import fs from "fs";
 import cors from "cors";
+import multer from "multer";
+const upload = multer({ dest: "/tmp" });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -72,6 +74,282 @@ async function startServer() {
     res.status(204).end();
   });
 
+  // --- Basic Server CRUD ---
+  app.get("/api/servers/:id", (req, res) => {
+    const db = getDB();
+    const server = db.servers.find((s: any) => s.id === req.params.id);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+    const { password, ...sanitized } = server;
+    res.json(sanitized);
+  });
+  app.put("/api/servers/:id", (req, res) => {
+    const db = getDB();
+    const idx = db.servers.findIndex((s: any) => s.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: "Server not found" });
+    db.servers[idx] = { ...db.servers[idx], ...req.body };
+    saveDB(db);
+    const { password, ...sanitized } = db.servers[idx];
+    res.json(sanitized);
+  });
+
+// REMOVE DUPLICATE MULTER IMPORT AND INIT
+
+// --- DevOps: Upload and Execute Script ---
+
+// --- DevOps: Upload and Execute Script ---
+app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
+    const db = getDB();
+    const server = db.servers.find((s: any) => s.id === req.params.id);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    const remotePath = req.body.remotePath || `/tmp/${req.file.originalname}`;
+    const conn = new Client();
+    conn.on("ready", () => {
+      conn.sftp((err: any, sftp: any) => {
+        if (err) {
+          conn.end();
+          return res.status(500).json({ error: err.message });
+        }
+        const readStream = fs.createReadStream(req.file.path);
+        const writeStream = sftp.createWriteStream(remotePath);
+        writeStream.on("close", () => {
+          conn.end();
+          fs.unlinkSync(req.file.path);
+          res.json({ remotePath });
+        });
+        writeStream.on("error", (err: any) => {
+          conn.end();
+          fs.unlinkSync(req.file.path);
+          res.status(500).json({ error: err.message });
+        });
+        readStream.pipe(writeStream);
+      });
+    }).on("error", (err: any) => {
+      res.status(500).json({ error: "Connection failed: " + err.message });
+    }).connect({
+      host: server.host,
+      port: server.port || 22,
+      username: server.username,
+      password: server.password,
+    });
+  });
+
+  // --- DevOps: Destructive Server Wipe ---
+  app.post("/api/servers/:id/destroy", (req, res) => {
+    const db = getDB();
+    const server = db.servers.find((s: any) => s.id === req.params.id);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+
+    const conn = new Client();
+    conn.on("ready", () => {
+      // Powerful cleanup sequence
+      const destroyCmd = [
+        'echo "Initiating nuclear cleanup..."',
+        // Refresh sudo timestamp with password from stdin
+        "sudo -S -p '' -v",
+        'sudo /usr/local/bin/k3s-uninstall.sh || true',
+        'sudo /usr/local/bin/k3s-agent-uninstall.sh || true',
+        'sudo docker stop $(sudo docker ps -aq) || true',
+        'sudo docker rm $(sudo docker ps -aq) || true',
+        'sudo docker system prune -af --volumes || true',
+        'sudo apt-get purge -y docker-engine docker docker.io docker-ce docker-ce-cli containerd containerd.io || sudo yum remove -y docker-client docker-client-latest docker-common docker-latest docker-latest-logrotate docker-logrotate docker-engine || true',
+        'sudo rm -rf /var/lib/docker /etc/docker /var/lib/containerd /var/run/docker.sock /var/lib/rancher /etc/rancher ~/.kube || true',
+        'echo "Cleanup complete. System is clean."'
+      ].join(' ; ');
+
+      conn.exec(destroyCmd, (err, stream) => {
+        if (err) {
+          conn.end();
+          return res.status(500).json({ error: err.message });
+        }
+        
+        // Inject password for sudo -S
+        stream.write(server.password + "\n");
+        
+        let output = "";
+        stream.on("data", (data: any) => output += data.toString());
+        stream.stderr.on("data", (data: any) => output += data.toString());
+        stream.on("close", () => {
+          conn.end();
+          
+          // Remove from database after cleanup
+          const dbAfter = getDB();
+          dbAfter.servers = dbAfter.servers.filter((s: any) => s.id !== req.params.id);
+          saveDB(dbAfter);
+          
+          res.json({ success: true, log: output });
+        });
+      });
+    }).on("error", (err: any) => {
+      res.status(500).json({ error: "Connection failed: " + err.message });
+    }).connect({
+      host: server.host,
+      port: server.port || 22,
+      username: server.username,
+      password: server.password,
+    });
+  });
+  
+  // --- DevOps: Remote Command Execution ---
+  app.post("/api/servers/:id/exec", (req, res) => {
+    const db = getDB();
+    const server = db.servers.find((s: any) => s.id === req.params.id);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+    const { command } = req.body;
+    if (!command) return res.status(400).json({ error: "Missing command" });
+    const conn = new Client();
+    let output = "";
+    let error = "";
+    conn.on("ready", () => {
+      conn.exec(command, (err, stream) => {
+        if (err) {
+          conn.end();
+          return res.status(500).json({ error: err.message });
+        }
+        stream.on("data", (data) => output += data.toString());
+        stream.stderr.on("data", (data) => error += data.toString());
+        stream.on("close", (code) => {
+          conn.end();
+          res.json({ code, output, error });
+        });
+      });
+    }).on("error", (err) => {
+      res.status(500).json({ error: "Connection failed: " + err.message });
+    }).connect({
+      host: server.host,
+      port: server.port || 22,
+      username: server.username,
+      password: server.password,
+    });
+  });
+  
+  // --- Cluster: Deploy Sample App ---
+  app.post("/api/clusters/:id/deploy-sample", async (req, res) => {
+    const db = getDB();
+    const cluster = db.clusters.find((c: any) => c.id === req.params.id);
+    if (!cluster) return res.status(404).json({ error: "Cluster not found" });
+    const results = [];
+    for (const serverId of cluster.serverIds) {
+      const server = db.servers.find((s: any) => s.id === serverId);
+      if (!server) {
+        results.push({ serverId, error: "Server not found" });
+        continue;
+      }
+      const conn = new Client();
+      await new Promise((resolve) => {
+        conn.on("ready", () => {
+          // Use Docker to run NGINX
+          conn.exec("docker run -d --name prod-nginx -p 8080:80 nginx", (err, stream) => {
+            if (err) {
+              results.push({ serverId, error: err.message });
+              conn.end();
+              return resolve(null);
+            }
+            let output = "";
+            let error = "";
+            stream.on("data", (data) => output += data.toString());
+            stream.stderr.on("data", (data) => error += data.toString());
+            stream.on("close", (code) => {
+              results.push({ serverId, code, output, error });
+              conn.end();
+              resolve(null);
+            });
+          });
+        }).on("error", (err) => {
+          results.push({ serverId, error: "Connection failed: " + err.message });
+          resolve(null);
+        }).connect({
+          host: server.host,
+          port: server.port || 22,
+          username: server.username,
+          password: server.password,
+        });
+      });
+    }
+    res.json({ results });
+  });
+  
+  // --- Cluster: Simulate Prod Load ---
+  app.post("/api/clusters/:id/simulate-load", async (req, res) => {
+    const db = getDB();
+    const cluster = db.clusters.find((c: any) => c.id === req.params.id);
+    if (!cluster) return res.status(404).json({ error: "Cluster not found" });
+    const results = [];
+    for (const serverId of cluster.serverIds) {
+      const server = db.servers.find((s: any) => s.id === serverId);
+      if (!server) {
+        results.push({ serverId, error: "Server not found" });
+        continue;
+      }
+      const conn = new Client();
+      await new Promise((resolve) => {
+        conn.on("ready", () => {
+          // Generate CPU and Network load in the background
+          const cmd = `nohup sh -c 'for i in $(seq 1 5); do wget -qO /dev/null http://speedtest.tele2.net/10MB.zip; done & dd if=/dev/zero of=/dev/null bs=1M count=2000 &' >/dev/null 2>&1 &`;
+          conn.exec(cmd, (err, stream) => {
+            if (err) {
+              results.push({ serverId, error: err.message });
+              conn.end();
+              return resolve(null);
+            }
+            stream.on("close", (code) => {
+              results.push({ serverId, code, output: "Load simulation started" });
+              conn.end();
+              resolve(null);
+            });
+          });
+        }).on("error", (err) => {
+          results.push({ serverId, error: "Connection failed: " + err.message });
+          resolve(null);
+        }).connect({
+          host: server.host,
+          port: server.port || 22,
+          username: server.username,
+          password: server.password,
+        });
+      });
+    }
+    res.json({ results });
+  });
+  
+  // --- Basic Cluster CRUD ---
+  app.get("/api/clusters", (req, res) => {
+    const db = getDB();
+    res.json(db.clusters || []);
+  });
+  app.get("/api/clusters/:id", (req, res) => {
+    const db = getDB();
+    const cluster = db.clusters.find((c: any) => c.id === req.params.id);
+    if (!cluster) return res.status(404).json({ error: "Cluster not found" });
+    res.json(cluster);
+  });
+  app.post("/api/clusters", (req, res) => {
+    const { name, serverIds } = req.body;
+    if (!name) return res.status(400).json({ error: "name is required" });
+    const db = getDB();
+    const newCluster = {
+      id: Math.random().toString(36).substr(2, 9),
+      name,
+      serverIds: serverIds || [],
+    };
+    db.clusters.push(newCluster);
+    saveDB(db);
+    res.json(newCluster);
+  });
+  app.put("/api/clusters/:id", (req, res) => {
+    const db = getDB();
+    const idx = db.clusters.findIndex((c: any) => c.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: "Cluster not found" });
+    db.clusters[idx] = { ...db.clusters[idx], ...req.body };
+    saveDB(db);
+    res.json(db.clusters[idx]);
+  });
+  app.delete("/api/clusters/:id", (req, res) => {
+    const db = getDB();
+    db.clusters = db.clusters.filter((c: any) => c.id !== req.params.id);
+    saveDB(db);
+    res.status(204).end();
+  });
   app.get("/api/servers/:id/telemetry", async (req, res) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
