@@ -267,7 +267,7 @@ export default function App() {
         });
 
         return (
-          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-1 duration-300">
             <div className="grid grid-cols-4 gap-6">
               <StatCard 
                 label="Active Nodes" 
@@ -1043,8 +1043,9 @@ function ServerCard({
       <div className="flex items-center gap-2">
          <button
            onClick={onTerminal}
-           className="flex-1 text-[11px] font-bold uppercase tracking-widest py-2.5 rounded-lg bg-gray-50 border border-gray-100 hover:bg-blue-600 hover:text-white hover:border-blue-600 transition-all text-gray-500 shadow-sm"
+           className="flex-1 flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest h-10 rounded-lg bg-gray-50 border border-gray-100 hover:bg-blue-600 hover:text-white hover:border-blue-600 transition-all text-gray-500 shadow-sm group"
          >
+           <TerminalIcon className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
            Access Node
          </button>
          <button
@@ -1071,22 +1072,22 @@ function ServerCard({
                setProdTest({ running: false, result: { code: -1, output: '', error: String(e) } });
              }
            }}
-           className={`p-2.5 rounded-lg border font-bold transition-all shadow-sm ${prodTest?.running ? 'bg-green-200 border-green-300 text-green-900 cursor-wait' : 'bg-white border-gray-100 text-green-700 hover:bg-green-50 hover:border-green-300'}`}
-           title="Prod Test"
            disabled={prodTest?.running}
+           className={`flex-1 flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest h-10 rounded-lg border transition-all shadow-sm ${prodTest?.running ? 'bg-emerald-50 border-emerald-100 text-emerald-600 cursor-wait' : 'bg-gray-50 border-gray-100 text-gray-500 hover:bg-emerald-600 hover:text-white hover:border-emerald-600'}`}
          >
-           {prodTest?.running ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Prod Test'}
+           {prodTest?.running ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Activity className="w-3.5 h-3.5" />}
+           {prodTest?.running ? 'Testing' : 'Prod Test'}
          </button>
          <button
            onClick={onSettings}
-           className="p-2.5 bg-gray-50 border border-gray-100 rounded-lg hover:border-gray-300 transition-colors"
+           className="w-10 h-10 flex items-center justify-center bg-gray-50 border border-gray-100 rounded-lg hover:border-gray-300 transition-colors"
            title="Server Settings"
          >
             <Settings className="w-4 h-4 text-gray-400" />
          </button>
          <button
             onClick={onNuke}
-            className="p-2.5 bg-red-50 border border-red-100 rounded-lg hover:bg-red-100 transition-colors"
+            className="w-10 h-10 flex items-center justify-center bg-red-50 border border-red-100 rounded-lg hover:bg-red-100 transition-colors"
             title="Nuke Server"
           >
              <Shield className="w-4 h-4 text-red-500" />
@@ -1577,6 +1578,7 @@ function ServerSettingsModal({
   onQuickDeploy,
   onVerify,
   onAnalyzeLogs,
+  onNuke,
 }: {
   server: Server;
   maintenanceMode: boolean;
@@ -1588,8 +1590,14 @@ function ServerSettingsModal({
   onNuke: () => void;
 }) {
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-gray-900/30 backdrop-blur-sm">
-      <motion.div initial={{ scale: 0.95, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 20 }} className="bg-white border border-gray-200 rounded-2xl w-full max-w-lg p-7 shadow-2xl">
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-gray-900/40 backdrop-blur-sm">
+      <motion.div 
+        initial={{ y: 2, opacity: 0 }} 
+        animate={{ y: 0, opacity: 1 }} 
+        exit={{ y: 2, opacity: 0 }} 
+        transition={{ type: "tween", ease: "easeOut", duration: 0.15 }}
+        className="bg-white border border-gray-200 rounded-2xl w-full max-w-lg p-7 shadow-2xl"
+      >
         <div className="flex items-center justify-between mb-4">
           <div>
             <div className="font-bold text-gray-900">{server.name}</div>
@@ -1651,9 +1659,10 @@ function AddModal({ onAdd, onClose }: { onAdd: (s: any) => void, onClose: () => 
       className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-gray-900/20 backdrop-blur-sm"
     >
       <motion.div 
-        initial={{ scale: 0.95, y: 20 }}
-        animate={{ scale: 1, y: 0 }}
-        exit={{ scale: 0.95, y: 20 }}
+        initial={{ y: 4, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 4, opacity: 0 }}
+        transition={{ type: "tween", ease: "easeOut", duration: 0.15 }}
         className="bg-white border border-gray-200 rounded-2xl w-full max-w-lg p-8 shadow-2xl"
       >
         <div className="flex items-center justify-between mb-8">
@@ -1933,9 +1942,10 @@ function ProdSimulationOverlay({ cluster, onClose }: { cluster: ClusterState, on
       className="fixed inset-0 z-[60] flex items-center justify-center p-4 md:p-12 bg-slate-950/90 backdrop-blur-md"
     >
       <motion.div 
-        initial={{ scale: 0.9, y: 40, opacity: 0 }}
+        initial={{ scale: 0.99, y: 4, opacity: 0 }}
         animate={{ scale: 1, y: 0, opacity: 1 }}
-        exit={{ scale: 0.9, y: 40, opacity: 0 }}
+        exit={{ scale: 0.99, y: 4, opacity: 0 }}
+        transition={{ type: "tween", ease: "circOut", duration: 0.2 }}
         className="bg-slate-900 border border-white/10 rounded-[2.5rem] w-full max-w-6xl h-full max-h-[850px] flex flex-col shadow-[0_0_100px_rgba(0,0,0,0.5)] overflow-hidden text-slate-100"
       >
         {/* Header */}
@@ -2140,8 +2150,14 @@ function ProdSimulationOverlay({ cluster, onClose }: { cluster: ClusterState, on
 }
 function NuclearWarningModal({ server, onConfirm, onClose }: { server: Server, onConfirm: () => void, onClose: () => void }) {
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[70] flex items-center justify-center p-8 bg-gray-900/40 backdrop-blur-sm">
-      <motion.div initial={{ scale: 0.95, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 20 }} className="bg-white border border-gray-200 rounded-[2rem] w-full max-w-md p-10 shadow-2xl text-center">
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-gray-900/40 backdrop-blur-sm">
+      <motion.div 
+        initial={{ y: 4, opacity: 0 }} 
+        animate={{ y: 0, opacity: 1 }} 
+        exit={{ y: 4, opacity: 0 }} 
+        transition={{ type: "tween", ease: "easeOut", duration: 0.15 }}
+        className="bg-white border border-gray-200 rounded-[2rem] w-full max-w-md p-10 shadow-2xl text-center"
+      >
         <div className="w-16 h-16 bg-amber-50 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-amber-100">
            <AlertCircle className="w-8 h-8 text-amber-500" />
         </div>
@@ -2166,12 +2182,14 @@ function NuclearConfirmationModal({ server, isDestroying, onConfirm, onClose }: 
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
+      transition={{ duration: 0.15 }}
       className="fixed inset-0 z-[75] flex items-center justify-center p-8 bg-red-950/60 backdrop-blur-md"
     >
       <motion.div 
-        initial={{ scale: 0.95, y: 20 }}
-        animate={{ scale: 1, y: 0 }}
-        exit={{ scale: 0.95, y: 20 }}
+        initial={{ scale: 0.99, y: 4, opacity: 0 }}
+        animate={{ scale: 1, y: 0, opacity: 1 }}
+        exit={{ scale: 0.99, y: 4, opacity: 0 }}
+        transition={{ type: "tween", ease: "circOut", duration: 0.2 }}
         className="bg-white border border-red-100 rounded-[2rem] w-full max-w-lg p-10 shadow-2xl relative overflow-hidden"
       >
         <div className="absolute top-0 left-0 w-full h-2 bg-red-600 animate-pulse" />
