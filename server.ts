@@ -36,6 +36,42 @@ function saveDB(db: any) {
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
 }
 
+// ─── FIX #3 (High): Allowed commands allowlist for /exec ─────────────────────
+// CodeQL "Uncontrolled command line": only permit a known-safe set of commands.
+const ALLOWED_EXEC_COMMANDS = new Set([
+  "df -h",
+  "free -m",
+  "uptime",
+  "whoami",
+  "hostname",
+  "uname -a",
+  "docker ps",
+  "docker ps -a",
+  "docker images",
+  "docker stats --no-stream",
+  "kubectl get nodes",
+  "kubectl get pods",
+  "kubectl get pods -A",
+  "kubectl get services",
+  "k3s kubectl get nodes",
+  "k3s kubectl get pods",
+  "systemctl status docker",
+  "systemctl status k3s",
+]);
+
+// ─── FIX #6 (High): Safe remote path validator ────────────────────────────────
+// CodeQL "Uncontrolled data used in path expression": resolve and prefix-check.
+function safePosixPath(userInput: string, username: string): string | null {
+  if (!userInput || typeof userInput !== "string") return null;
+  const normalized = path.posix.normalize(userInput);
+  // Must start with /tmp/ or /home/<username>/
+  const allowed = [`/tmp/`, `/home/${username}/`];
+  for (const prefix of allowed) {
+    if (normalized.startsWith(prefix)) return normalized;
+  }
+  return null;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -92,6 +128,7 @@ async function startServer() {
     const { password, ...sanitized } = server;
     res.json(sanitized);
   });
+
   app.put("/api/servers/:id", (req, res) => {
     const db = getDB();
     const idx = db.servers.findIndex((s: any) => s.id === req.params.id);
@@ -102,210 +139,292 @@ async function startServer() {
     res.json(sanitized);
   });
 
-// REMOVE DUPLICATE MULTER IMPORT AND INIT
-
-// --- DevOps: Upload and Execute Script ---
-
-// --- DevOps: Upload and Execute Script ---
-app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
+  // --- DevOps: Upload and Execute Script ---
+  // FIX #4 & #5 (High): "Uncontrolled data used in path expression"
+  // remotePath is now validated against an allowlist of safe prefixes before use.
+  app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
     if (!server) return res.status(404).json({ error: "Server not found" });
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-    const remotePath = req.body.remotePath || `/tmp/${req.file.originalname}`;
-    const conn = new Client();
-    conn.on("ready", () => {
-      conn.sftp((err: any, sftp: any) => {
-        if (err) {
-          conn.end();
-          return res.status(500).json({ error: err.message });
-        }
-        if (!req.file || !req.file.path.startsWith("/tmp/")) {
-          conn.end();
-          return res.status(400).json({ error: "Invalid file path" });
-        }
-        
-        // Sanitize remote path to prevent traversal and ensure it's absolute or relative to home
-        const sanitizedRemotePath = remotePath.startsWith('/') 
-          ? path.posix.normalize(remotePath)
-          : path.posix.join('.', path.posix.normalize(remotePath)).replace(/^(\.\.(\/|\\|$))+/, '');
-        
-        const readStream = fs.createReadStream(req.file.path);
-        const writeStream = sftp.createWriteStream(sanitizedRemotePath);
-        writeStream.on("close", () => {
-          conn.end();
-          fs.unlinkSync(req.file.path);
-          res.json({ remotePath });
-        });
-        writeStream.on("error", (err: any) => {
-          conn.end();
-          fs.unlinkSync(req.file.path);
-          res.status(500).json({ error: err.message });
-        });
-        readStream.pipe(writeStream);
+
+    // FIX: Validate local temp path before reading
+    if (!req.file.path.startsWith("/tmp/")) {
+      return res.status(400).json({ error: "Invalid local file path" });
+    }
+
+    // FIX: Validate the remote path against safe prefixes — not just normalize
+    const rawRemotePath = req.body.remotePath || `/tmp/${req.file.originalname}`;
+    const sanitizedRemotePath = safePosixPath(rawRemotePath, server.username);
+    if (!sanitizedRemotePath) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({
+        error: "Remote path must be within /tmp/ or /home/<username>/",
       });
-    }).on("error", (err: any) => {
-      res.status(500).json({ error: "Connection failed: " + err.message });
-    }).connect({
-      host: server.host,
-      port: server.port || 22,
-      username: server.username,
-      password: server.password,
-    });
+    }
+
+    const conn = new Client();
+    conn
+      .on("ready", () => {
+        conn.sftp((err: any, sftp: any) => {
+          if (err) {
+            conn.end();
+            return res.status(500).json({ error: err.message });
+          }
+
+          const readStream = fs.createReadStream(req.file.path);
+          const writeStream = sftp.createWriteStream(sanitizedRemotePath);
+          writeStream.on("close", () => {
+            conn.end();
+            fs.unlinkSync(req.file.path);
+            res.json({ remotePath: sanitizedRemotePath });
+          });
+          writeStream.on("error", (err: any) => {
+            conn.end();
+            fs.unlinkSync(req.file.path);
+            res.status(500).json({ error: err.message });
+          });
+          readStream.pipe(writeStream);
+        });
+      })
+      .on("error", (err: any) => {
+        res.status(500).json({ error: "Connection failed: " + err.message });
+      })
+      .connect({
+        host: server.host,
+        port: server.port || 22,
+        username: server.username,
+        password: server.password,
+      });
   });
 
   // --- DevOps: Destructive Server Wipe ---
+  // FIX #1 (Critical): "Uncontrolled command line"
+  // The destroy command is now fully hardcoded — no user input is interpolated.
+  // Password is injected via stdin to sudo -S, never embedded in the command string.
   app.post("/api/servers/:id/destroy", (req, res) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
     if (!server) return res.status(404).json({ error: "Server not found" });
 
     const conn = new Client();
-    conn.on("ready", () => {
-      // Powerful cleanup sequence
-      const destroyCmd = [
-        'echo "Initiating nuclear cleanup..."',
-        // Refresh sudo timestamp with password from stdin
-        "sudo -S -p '' -v",
-        'sudo /usr/local/bin/k3s-uninstall.sh || true',
-        'sudo /usr/local/bin/k3s-agent-uninstall.sh || true',
-        'sudo docker stop $(sudo docker ps -aq) || true',
-        'sudo docker rm $(sudo docker ps -aq) || true',
-        'sudo docker system prune -af --volumes || true',
-        'sudo apt-get purge -y docker-engine docker docker.io docker-ce docker-ce-cli containerd containerd.io || sudo yum remove -y docker-client docker-client-latest docker-common docker-latest docker-latest-logrotate docker-logrotate docker-engine || true',
-        'sudo rm -rf /var/lib/docker /etc/docker /var/lib/containerd /var/run/docker.sock /var/lib/rancher /etc/rancher ~/.kube || true',
-        'echo "Cleanup complete. System is clean."'
-      ].join(' ; ');
+    conn
+      .on("ready", () => {
+        // All commands are fully hardcoded — zero user-controlled data
+        const destroyCmd = [
+          'echo "Initiating nuclear cleanup..."',
+          "sudo -S -p '' -v",
+          "sudo /usr/local/bin/k3s-uninstall.sh || true",
+          "sudo /usr/local/bin/k3s-agent-uninstall.sh || true",
+          "sudo docker stop $(sudo docker ps -aq) || true",
+          "sudo docker rm $(sudo docker ps -aq) || true",
+          "sudo docker system prune -af --volumes || true",
+          "sudo apt-get purge -y docker-engine docker docker.io docker-ce docker-ce-cli containerd containerd.io || sudo yum remove -y docker-client docker-client-latest docker-common docker-latest docker-latest-logrotate docker-logrotate docker-engine || true",
+          "sudo rm -rf /var/lib/docker /etc/docker /var/lib/containerd /var/run/docker.sock /var/lib/rancher /etc/rancher ~/.kube || true",
+          'echo "Cleanup complete. System is clean."',
+        ].join(" ; ");
 
-      conn.exec(destroyCmd, (err, stream) => {
-        if (err) {
-          conn.end();
-          return res.status(500).json({ error: err.message });
-        }
-        
-        // Inject password for sudo -S
-        stream.write(server.password + "\n");
-        
-        let output = "";
-        stream.on("data", (data: any) => output += data.toString());
-        stream.stderr.on("data", (data: any) => output += data.toString());
-        stream.on("close", () => {
-          conn.end();
-          
-          // Remove from database after cleanup
-          const dbAfter = getDB();
-          dbAfter.servers = dbAfter.servers.filter((s: any) => s.id !== req.params.id);
-          saveDB(dbAfter);
-          
-          res.json({ success: true, log: output });
+        conn.exec(destroyCmd, (err, stream) => {
+          if (err) {
+            conn.end();
+            return res.status(500).json({ error: err.message });
+          }
+
+          // Password fed to sudo -S via stdin — never interpolated into the command
+          stream.write(server.password + "\n");
+
+          let output = "";
+          stream.on("data", (data: any) => (output += data.toString()));
+          stream.stderr.on("data", (data: any) => (output += data.toString()));
+          stream.on("close", () => {
+            conn.end();
+            const dbAfter = getDB();
+            dbAfter.servers = dbAfter.servers.filter((s: any) => s.id !== req.params.id);
+            saveDB(dbAfter);
+            res.json({ success: true, log: output });
+          });
         });
+      })
+      .on("error", (err: any) => {
+        res.status(500).json({ error: "Connection failed: " + err.message });
+      })
+      .connect({
+        host: server.host,
+        port: server.port || 22,
+        username: server.username,
+        password: server.password,
       });
-    }).on("error", (err: any) => {
-      res.status(500).json({ error: "Connection failed: " + err.message });
-    }).connect({
-      host: server.host,
-      port: server.port || 22,
-      username: server.username,
-      password: server.password,
-    });
   });
-  
+
   // --- DevOps: Remote Command Execution ---
+  // FIX #2 (Critical): "Uncontrolled command line"
+  // Only commands from an explicit allowlist are accepted.
+  // This is the only CodeQL-safe approach — taint tracking cannot be satisfied
+  // by sanitization alone when data flows into exec().
   app.post("/api/servers/:id/exec", (req, res) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
     if (!server) return res.status(404).json({ error: "Server not found" });
+
     const { command } = req.body;
-    if (!command || typeof command !== 'string') return res.status(400).json({ error: "Missing or invalid command" });
+    if (!command || typeof command !== "string") {
+      return res.status(400).json({ error: "Missing or invalid command" });
+    }
+
+    // FIX: Reject anything not on the allowlist — stops taint reaching exec()
+    if (!ALLOWED_EXEC_COMMANDS.has(command.trim())) {
+      return res.status(403).json({
+        error: "Command not permitted. Use one of the allowed commands.",
+        allowed: [...ALLOWED_EXEC_COMMANDS],
+      });
+    }
+
+    const safeCommand = command.trim(); // taint is broken: value is allowlist-gated
+
     const conn = new Client();
     let output = "";
     let error = "";
-    conn.on("ready", () => {
-      conn.exec(command, (err, stream) => {
-        if (err) {
-          conn.end();
-          return res.status(500).json({ error: err.message });
-        }
-        stream.on("data", (data) => output += data.toString());
-        stream.stderr.on("data", (data) => error += data.toString());
-        stream.on("close", (code) => {
-          conn.end();
-          res.json({ code, output, error });
+    conn
+      .on("ready", () => {
+        conn.exec(safeCommand, (err, stream) => {
+          if (err) {
+            conn.end();
+            return res.status(500).json({ error: err.message });
+          }
+          stream.on("data", (data) => (output += data.toString()));
+          stream.stderr.on("data", (data) => (error += data.toString()));
+          stream.on("close", (code) => {
+            conn.end();
+            res.json({ code, output, error });
+          });
         });
+      })
+      .on("error", (err) => {
+        res.status(500).json({ error: "Connection failed: " + err.message });
+      })
+      .connect({
+        host: server.host,
+        port: server.port || 22,
+        username: server.username,
+        password: server.password,
       });
-    }).on("error", (err) => {
-      res.status(500).json({ error: "Connection failed: " + err.message });
-    }).connect({
-      host: server.host,
-      port: server.port || 22,
-      username: server.username,
-      password: server.password,
-    });
   });
-  
+
   // --- DevOps: Deploy Custom Dockerfile ---
+  // FIX #3 (Critical): "Uncontrolled command line"
+  // dockerfile content is written to a local temp file and SFTPed over,
+  // never embedded in a shell string. portMapping and containerName are
+  // strictly validated before use.
   app.post("/api/servers/:id/deploy-dockerfile", (req, res) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
     if (!server) return res.status(404).json({ error: "Server not found" });
+
     const { dockerfile, containerName, portMapping } = req.body;
-    if (!dockerfile || !containerName) return res.status(400).json({ error: "Missing parameters" });
-    
-    // Docker repository names must be lowercase and valid
-    const safeContainerName = containerName.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
-    if (!safeContainerName) return res.status(400).json({ error: "Invalid container name" });
-    
-    const conn = new Client();
-    conn.on("ready", () => {
-      // Create a temporary directory, write the Dockerfile, build, and run
-      // We encode the dockerfile to base64 to avoid escaping issues in bash
-      const base64Dockerfile = Buffer.from(dockerfile).toString('base64');
-      const workDir = `/tmp/kubecast-deploy-${safeContainerName}-${Date.now()}`;
-      
-      let portFlag = "";
-      if (portMapping) {
-        // Sanitize port mapping to allow only numbers, dots, colons, and slashes
-        const safePortMapping = String(portMapping).replace(/[^0-9a-zA-Z.:/-]/g, '');
-        if (safePortMapping) {
-          portFlag = `-p ${safePortMapping}`;
-        }
+    if (!dockerfile || !containerName) {
+      return res.status(400).json({ error: "Missing parameters" });
+    }
+
+    // Strict container name: lowercase alphanumeric + hyphens only
+    const safeContainerName = containerName.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+    if (!safeContainerName || safeContainerName.length > 64) {
+      return res.status(400).json({ error: "Invalid container name" });
+    }
+
+    // Port mapping: digits and colon only (e.g. "8080:80")
+    let safePortFlag = "";
+    if (portMapping) {
+      if (!/^\d{1,5}:\d{1,5}$/.test(String(portMapping).trim())) {
+        return res.status(400).json({ error: "Invalid port mapping format. Use HOST:CONTAINER (e.g. 8080:80)" });
       }
+      safePortFlag = `-p ${portMapping.trim()}`;
+    }
 
-      const innerScript = [
-        `mkdir -p ${workDir}`,
-        `echo "${base64Dockerfile}" | base64 -d > ${workDir}/Dockerfile`,
-        `docker build -t ${safeContainerName} ${workDir}`,
-        `docker rm -f ${safeContainerName} 2>/dev/null || true`,
-        `docker run -d --name ${safeContainerName} ${portFlag} ${safeContainerName}`,
-        `rm -rf ${workDir}`
-      ].join(" && ");
+    // FIX: Write Dockerfile to a local temp file and SFTP it to the server.
+    // This avoids embedding user-controlled dockerfile content in any shell string.
+    const localTmpPath = `/tmp/kubecast-dockerfile-${Date.now()}`;
+    try {
+      fs.writeFileSync(localTmpPath, dockerfile);
+    } catch (e: any) {
+      return res.status(500).json({ error: "Failed to write temp Dockerfile: " + e.message });
+    }
 
-      const script = `sudo -S -p '' bash -c '${innerScript}'`;
+    const workDir = `/tmp/kubecast-deploy-${safeContainerName}-${Date.now()}`;
 
-      // Run script with sudo password injection
-      conn.exec(script, (err, stream) => {
-        if (err) {
-          conn.end();
-          return res.status(500).json({ error: err.message });
-        }
-        stream.write(server.password + "\n");
-        let output = "";
-        let error = "";
-        stream.on("data", (data) => output += data.toString());
-        stream.stderr.on("data", (data) => error += data.toString());
-        stream.on("close", (code) => {
-          conn.end();
-          res.json({ code, output, error });
+    const conn = new Client();
+    conn
+      .on("ready", () => {
+        conn.sftp((err: any, sftp: any) => {
+          if (err) {
+            conn.end();
+            fs.unlinkSync(localTmpPath);
+            return res.status(500).json({ error: err.message });
+          }
+
+          // First: create working directory via exec (hardcoded path, no user input)
+          conn.exec(`mkdir -p ${workDir}`, (mkErr, mkStream) => {
+            if (mkErr) {
+              conn.end();
+              fs.unlinkSync(localTmpPath);
+              return res.status(500).json({ error: mkErr.message });
+            }
+            mkStream.on("close", () => {
+              // SFTP the Dockerfile — no shell interpolation of its contents
+              const remoteDockerfile = `${workDir}/Dockerfile`;
+              const readStream = fs.createReadStream(localTmpPath);
+              const writeStream = sftp.createWriteStream(remoteDockerfile);
+
+              writeStream.on("close", () => {
+                fs.unlinkSync(localTmpPath);
+
+                // Now build and run — only safeContainerName and safePortFlag
+                // are interpolated; both are strictly validated above.
+                const buildAndRun = [
+                  `docker build -t ${safeContainerName} ${workDir}`,
+                  `docker rm -f ${safeContainerName} 2>/dev/null || true`,
+                  `docker run -d --name ${safeContainerName} ${safePortFlag} ${safeContainerName}`,
+                  `rm -rf ${workDir}`,
+                ].join(" && ");
+
+                const script = `sudo -S -p '' bash -c '${buildAndRun}'`;
+                conn.exec(script, (execErr, stream) => {
+                  if (execErr) {
+                    conn.end();
+                    return res.status(500).json({ error: execErr.message });
+                  }
+                  stream.write(server.password + "\n");
+                  let output = "";
+                  let error = "";
+                  stream.on("data", (data) => (output += data.toString()));
+                  stream.stderr.on("data", (data) => (error += data.toString()));
+                  stream.on("close", (code) => {
+                    conn.end();
+                    res.json({ code, output, error });
+                  });
+                });
+              });
+
+              writeStream.on("error", (e: any) => {
+                conn.end();
+                fs.unlinkSync(localTmpPath);
+                res.status(500).json({ error: e.message });
+              });
+
+              readStream.pipe(writeStream);
+            });
+          });
         });
+      })
+      .on("error", (err) => {
+        fs.unlinkSync(localTmpPath);
+        res.status(500).json({ error: "Connection failed: " + err.message });
+      })
+      .connect({
+        host: server.host,
+        port: server.port || 22,
+        username: server.username,
+        password: server.password,
       });
-    }).on("error", (err) => {
-      res.status(500).json({ error: "Connection failed: " + err.message });
-    }).connect({
-      host: server.host,
-      port: server.port || 22,
-      username: server.username,
-      password: server.password,
-    });
   });
 
   // --- DevOps: Stop and Remove Container ---
@@ -313,40 +432,44 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
     if (!server) return res.status(404).json({ error: "Server not found" });
+
     const { containerName } = req.body;
     if (!containerName) return res.status(400).json({ error: "Missing containerName" });
-    
-    const safeContainerName = containerName.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+
+    const safeContainerName = containerName.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
     if (!safeContainerName) return res.status(400).json({ error: "Invalid container name" });
+
     const conn = new Client();
-    conn.on("ready", () => {
-      // Use docker rm -f to force stop and remove in one command
-      const script = `sudo -S -p '' docker rm -f ${safeContainerName}`;
-      conn.exec(script, (err, stream) => {
-        if (err) {
-          conn.end();
-          return res.status(500).json({ error: err.message });
-        }
-        stream.write(server.password + "\n");
-        let output = "";
-        let error = "";
-        stream.on("data", (data) => output += data.toString());
-        stream.stderr.on("data", (data) => error += data.toString());
-        stream.on("close", (code) => {
-          conn.end();
-          res.json({ code, output, error });
+    conn
+      .on("ready", () => {
+        const script = `sudo -S -p '' docker rm -f ${safeContainerName}`;
+        conn.exec(script, (err, stream) => {
+          if (err) {
+            conn.end();
+            return res.status(500).json({ error: err.message });
+          }
+          stream.write(server.password + "\n");
+          let output = "";
+          let error = "";
+          stream.on("data", (data) => (output += data.toString()));
+          stream.stderr.on("data", (data) => (error += data.toString()));
+          stream.on("close", (code) => {
+            conn.end();
+            res.json({ code, output, error });
+          });
         });
+      })
+      .on("error", (err) => {
+        res.status(500).json({ error: "Connection failed: " + err.message });
+      })
+      .connect({
+        host: server.host,
+        port: server.port || 22,
+        username: server.username,
+        password: server.password,
       });
-    }).on("error", (err) => {
-      res.status(500).json({ error: "Connection failed: " + err.message });
-    }).connect({
-      host: server.host,
-      port: server.port || 22,
-      username: server.username,
-      password: server.password,
-    });
   });
-  
+
   // --- Cluster: Deploy Sample App ---
   app.post("/api/clusters/:id/deploy-sample", async (req, res) => {
     const db = getDB();
@@ -361,38 +484,41 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
       }
       const conn = new Client();
       await new Promise((resolve) => {
-        conn.on("ready", () => {
-          // Use Docker to run NGINX
-          conn.exec("docker run -d --name prod-nginx -p 8080:80 nginx", (err, stream) => {
-            if (err) {
-              results.push({ serverId, error: err.message });
-              conn.end();
-              return resolve(null);
-            }
-            let output = "";
-            let error = "";
-            stream.on("data", (data) => output += data.toString());
-            stream.stderr.on("data", (data) => error += data.toString());
-            stream.on("close", (code) => {
-              results.push({ serverId, code, output, error });
-              conn.end();
-              resolve(null);
+        conn
+          .on("ready", () => {
+            // Fully hardcoded command — no user input
+            conn.exec("docker run -d --name prod-nginx -p 8080:80 nginx", (err, stream) => {
+              if (err) {
+                results.push({ serverId, error: err.message });
+                conn.end();
+                return resolve(null);
+              }
+              let output = "";
+              let error = "";
+              stream.on("data", (data) => (output += data.toString()));
+              stream.stderr.on("data", (data) => (error += data.toString()));
+              stream.on("close", (code) => {
+                results.push({ serverId, code, output, error });
+                conn.end();
+                resolve(null);
+              });
             });
+          })
+          .on("error", (err) => {
+            results.push({ serverId, error: "Connection failed: " + err.message });
+            resolve(null);
+          })
+          .connect({
+            host: server.host,
+            port: server.port || 22,
+            username: server.username,
+            password: server.password,
           });
-        }).on("error", (err) => {
-          results.push({ serverId, error: "Connection failed: " + err.message });
-          resolve(null);
-        }).connect({
-          host: server.host,
-          port: server.port || 22,
-          username: server.username,
-          password: server.password,
-        });
       });
     }
     res.json({ results });
   });
-  
+
   // --- Cluster: Simulate Prod Load ---
   app.post("/api/clusters/:id/simulate-load", async (req, res) => {
     const db = getDB();
@@ -407,35 +533,38 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
       }
       const conn = new Client();
       await new Promise((resolve) => {
-        conn.on("ready", () => {
-          // Generate CPU and Network load in the background
-          const cmd = `nohup sh -c 'for i in $(seq 1 5); do wget -qO /dev/null http://speedtest.tele2.net/10MB.zip; done & dd if=/dev/zero of=/dev/null bs=1M count=2000 &' >/dev/null 2>&1 &`;
-          conn.exec(cmd, (err, stream) => {
-            if (err) {
-              results.push({ serverId, error: err.message });
-              conn.end();
-              return resolve(null);
-            }
-            stream.on("close", (code) => {
-              results.push({ serverId, code, output: "Load simulation started" });
-              conn.end();
-              resolve(null);
+        conn
+          .on("ready", () => {
+            // Fully hardcoded — no user input
+            const cmd = `nohup sh -c 'for i in $(seq 1 5); do wget -qO /dev/null http://speedtest.tele2.net/10MB.zip; done & dd if=/dev/zero of=/dev/null bs=1M count=2000 &' >/dev/null 2>&1 &`;
+            conn.exec(cmd, (err, stream) => {
+              if (err) {
+                results.push({ serverId, error: err.message });
+                conn.end();
+                return resolve(null);
+              }
+              stream.on("close", (code) => {
+                results.push({ serverId, code, output: "Load simulation started" });
+                conn.end();
+                resolve(null);
+              });
             });
+          })
+          .on("error", (err) => {
+            results.push({ serverId, error: "Connection failed: " + err.message });
+            resolve(null);
+          })
+          .connect({
+            host: server.host,
+            port: server.port || 22,
+            username: server.username,
+            password: server.password,
           });
-        }).on("error", (err) => {
-          results.push({ serverId, error: "Connection failed: " + err.message });
-          resolve(null);
-        }).connect({
-          host: server.host,
-          port: server.port || 22,
-          username: server.username,
-          password: server.password,
-        });
       });
     }
     res.json({ results });
   });
-  
+
   // --- Basic Cluster CRUD ---
   app.get("/api/clusters", (req, res) => {
     const db = getDB();
@@ -474,75 +603,76 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
     saveDB(db);
     res.status(204).end();
   });
+
   app.get("/api/servers/:id/telemetry", async (req, res) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
-    
-    if (!server) {
-      return res.status(404).json({ error: "Server not found" });
-    }
+    if (!server) return res.status(404).json({ error: "Server not found" });
 
     const conn = new Client();
-    conn.on("ready", () => {
-      // Run multiple commands to get real telemetry
-      // 1. Disk usage 2. CPU usage 3. RAM usage 4. Load avg 5. Uptime
-      // 6. RAM totals 7. Swap 8. Network rx/tx 9. Docker version 10. K3s version
-      const cmd = `
-        echo "disk: $(df -h / | tail -1 | awk '{print $5}')"
-        echo "disk_free: $(df -h / | tail -1 | awk '{print $4}')"
-        echo "disk_total: $(df -h / | tail -1 | awk '{print $2}')"
-        echo "cpu: $(sh -lc 'if [ -r /proc/stat ]; then read -r _ u n s i iw irq sir st g gn < /proc/stat; t1=$((u+n+s+i+iw+irq+sir+st)); idle1=$i; sleep 0.5; read -r _ u n s i iw irq sir st g gn < /proc/stat; t2=$((u+n+s+i+iw+irq+sir+st)); idle2=$i; dt=$((t2-t1)); didle=$((idle2-idle1)); if [ "$dt" -gt 0 ]; then awk "BEGIN { printf \\"%.1f\\", (1-($didle/$dt))*100 }"; else echo 0; fi; else echo 0; fi')"
-        echo "ram: $(sh -lc 'if [ -r /proc/meminfo ]; then total=$(awk "/^MemTotal:/ {print \\$2}" /proc/meminfo); avail=$(awk "/^MemAvailable:/ {print \\$2}" /proc/meminfo); if [ -n "$total" ] && [ -n "$avail" ] && [ "$total" -gt 0 ]; then awk "BEGIN { printf \\"%.1f\\", (($total-$avail)/$total)*100 }"; else echo 0; fi; else echo 0; fi')"
-        echo "ram_total_mb: $(sh -lc 'awk "/^MemTotal:/ { printf \\"%.0f\\", \\$2/1024 }" /proc/meminfo 2>/dev/null || echo 0')"
-        echo "ram_available_mb: $(sh -lc 'awk "/^MemAvailable:/ { printf \\"%.0f\\", \\$2/1024 }" /proc/meminfo 2>/dev/null || echo 0')"
-        echo "swap_used_mb: $(sh -lc 'if [ -r /proc/meminfo ]; then st=$(awk "/^SwapTotal:/ {print \\$2}" /proc/meminfo); sf=$(awk "/^SwapFree:/ {print \\$2}" /proc/meminfo); if [ -n "$st" ] && [ -n "$sf" ]; then awk "BEGIN { printf \\"%.0f\\", (($st-$sf)/1024) }"; else echo 0; fi; else echo 0; fi')"
-        echo "load1: $(sh -lc 'awk "{print \\$1}" /proc/loadavg 2>/dev/null || echo 0')"
-        echo "load5: $(sh -lc 'awk "{print \\$2}" /proc/loadavg 2>/dev/null || echo 0')"
-        echo "load15: $(sh -lc 'awk "{print \\$3}" /proc/loadavg 2>/dev/null || echo 0')"
-        echo "uptime_s: $(sh -lc 'awk "{printf \\"%.0f\\", \\$1}" /proc/uptime 2>/dev/null || echo 0')"
-        echo "net_rx_mb: $(sh -lc 'awk -F\"[: ]+\" \"NR>2 {rx+=\\$3} END {printf \\"%.1f\\", rx/1024/1024}\" /proc/net/dev 2>/dev/null || echo 0')"
-        echo "net_tx_mb: $(sh -lc 'awk -F\"[: ]+\" \"NR>2 {tx+=\\$11} END {printf \\"%.1f\\", tx/1024/1024}\" /proc/net/dev 2>/dev/null || echo 0')"
-        echo "docker: $(docker --version 2>/dev/null || echo 'none')"
-        echo "k3s: $(k3s --version 2>/dev/null || echo 'none')"
-      `;
+    conn
+      .on("ready", () => {
+        // Fully hardcoded telemetry command — no user input interpolated
+        const cmd = `
+          echo "disk: $(df -h / | tail -1 | awk '{print $5}')"
+          echo "disk_free: $(df -h / | tail -1 | awk '{print $4}')"
+          echo "disk_total: $(df -h / | tail -1 | awk '{print $2}')"
+          echo "cpu: $(sh -lc 'if [ -r /proc/stat ]; then read -r _ u n s i iw irq sir st g gn < /proc/stat; t1=$((u+n+s+i+iw+irq+sir+st)); idle1=$i; sleep 0.5; read -r _ u n s i iw irq sir st g gn < /proc/stat; t2=$((u+n+s+i+iw+irq+sir+st)); idle2=$i; dt=$((t2-t1)); didle=$((idle2-idle1)); if [ "$dt" -gt 0 ]; then awk "BEGIN { printf \\"%.1f\\", (1-($didle/$dt))*100 }"; else echo 0; fi; else echo 0; fi')"
+          echo "ram: $(sh -lc 'if [ -r /proc/meminfo ]; then total=$(awk "/^MemTotal:/ {print \\$2}" /proc/meminfo); avail=$(awk "/^MemAvailable:/ {print \\$2}" /proc/meminfo); if [ -n "$total" ] && [ -n "$avail" ] && [ "$total" -gt 0 ]; then awk "BEGIN { printf \\"%.1f\\", (($total-$avail)/$total)*100 }"; else echo 0; fi; else echo 0; fi')"
+          echo "ram_total_mb: $(sh -lc 'awk "/^MemTotal:/ { printf \\"%.0f\\", \\$2/1024 }" /proc/meminfo 2>/dev/null || echo 0')"
+          echo "ram_available_mb: $(sh -lc 'awk "/^MemAvailable:/ { printf \\"%.0f\\", \\$2/1024 }" /proc/meminfo 2>/dev/null || echo 0')"
+          echo "swap_used_mb: $(sh -lc 'if [ -r /proc/meminfo ]; then st=$(awk "/^SwapTotal:/ {print \\$2}" /proc/meminfo); sf=$(awk "/^SwapFree:/ {print \\$2}" /proc/meminfo); if [ -n "$st" ] && [ -n "$sf" ]; then awk "BEGIN { printf \\"%.0f\\", (($st-$sf)/1024) }"; else echo 0; fi; else echo 0; fi')"
+          echo "load1: $(sh -lc 'awk "{print \\$1}" /proc/loadavg 2>/dev/null || echo 0')"
+          echo "load5: $(sh -lc 'awk "{print \\$2}" /proc/loadavg 2>/dev/null || echo 0')"
+          echo "load15: $(sh -lc 'awk "{print \\$3}" /proc/loadavg 2>/dev/null || echo 0')"
+          echo "uptime_s: $(sh -lc 'awk "{printf \\"%.0f\\", \\$1}" /proc/uptime 2>/dev/null || echo 0')"
+          echo "net_rx_mb: $(sh -lc 'awk -F\"[: ]+\" \"NR>2 {rx+=\\$3} END {printf \\"%.1f\\", rx/1024/1024}\" /proc/net/dev 2>/dev/null || echo 0')"
+          echo "net_tx_mb: $(sh -lc 'awk -F\"[: ]+\" \"NR>2 {tx+=\\$11} END {printf \\"%.1f\\", tx/1024/1024}\" /proc/net/dev 2>/dev/null || echo 0')"
+          echo "docker: $(docker --version 2>/dev/null || echo 'none')"
+          echo "k3s: $(k3s --version 2>/dev/null || echo 'none')"
+        `;
 
-      conn.exec(cmd, (err, stream) => {
-        if (err) {
-          conn.end();
-          return res.status(500).json({ error: err.message });
-        }
-        let output = "";
-        stream.on("data", (data) => output += data.toString());
-        stream.on("close", () => {
-          conn.end();
-          // Parse the raw terminal output
-          const stats: any = {};
-          output.split("\n").forEach(line => {
-            const [key, val] = line.split(": ");
-            if (key && val) stats[key.trim()] = val.trim();
-          });
-
-          // Update server status and installed flags based on live telemetry
-          const freshDb = getDB();
-          const srv = freshDb.servers.find((s: any) => s.id === req.params.id);
-          if (srv) {
-            srv.status = "online";
-            srv.installed.docker = !!(stats.docker && stats.docker !== 'none');
-            srv.installed.k8s = !!(stats.k3s && stats.k3s !== 'none');
-            saveDB(freshDb);
+        conn.exec(cmd, (err, stream) => {
+          if (err) {
+            conn.end();
+            return res.status(500).json({ error: err.message });
           }
+          let output = "";
+          stream.on("data", (data) => (output += data.toString()));
+          stream.on("close", () => {
+            conn.end();
+            const stats: any = {};
+            output.split("\n").forEach((line) => {
+              const colonIdx = line.indexOf(": ");
+              if (colonIdx !== -1) {
+                const key = line.substring(0, colonIdx).trim();
+                const val = line.substring(colonIdx + 2).trim();
+                if (key) stats[key] = val;
+              }
+            });
 
-          res.json(stats);
+            const freshDb = getDB();
+            const srv = freshDb.servers.find((s: any) => s.id === req.params.id);
+            if (srv) {
+              srv.status = "online";
+              srv.installed.docker = !!(stats.docker && stats.docker !== "none");
+              srv.installed.k8s = !!(stats.k3s && stats.k3s !== "none");
+              saveDB(freshDb);
+            }
+
+            res.json(stats);
+          });
         });
+      })
+      .on("error", (err) => {
+        res.status(500).json({ error: "Connection failed: " + err.message });
+      })
+      .connect({
+        host: server.host,
+        port: server.port || 22,
+        username: server.username,
+        password: server.password,
       });
-    }).on("error", (err) => {
-      res.status(500).json({ error: "Connection failed: " + err.message });
-    }).connect({
-      host: server.host,
-      port: server.port || 22,
-      username: server.username,
-      password: server.password,
-    });
   });
 
   const httpServer = app.listen(PORT, "0.0.0.0", () => {
@@ -550,9 +680,41 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
   });
 
   // WebSocket for SSH Terminal
+  // FIX #7 (High): "Missing rate limiting" — track connections per IP and reject excess.
   const wss = new WebSocketServer({ server: httpServer, path: "/ws/ssh" });
 
-  wss.on("connection", (ws) => {
+  const wsConnectionCount = new Map<string, number>();
+  const WS_MAX_CONNECTIONS_PER_IP = 10;
+  const WS_RATE_WINDOW_MS = 60_000;
+  const wsRateTracker = new Map<string, { count: number; resetAt: number }>();
+
+  wss.on("connection", (ws, req) => {
+    const ip = req.socket.remoteAddress ?? "unknown";
+
+    // ── Per-IP connection cap ──────────────────────────────────────────────
+    const currentConns = wsConnectionCount.get(ip) ?? 0;
+    if (currentConns >= WS_MAX_CONNECTIONS_PER_IP) {
+      ws.close(1008, "Too many connections from this IP");
+      return;
+    }
+    wsConnectionCount.set(ip, currentConns + 1);
+    ws.on("close", () => {
+      wsConnectionCount.set(ip, Math.max(0, (wsConnectionCount.get(ip) ?? 1) - 1));
+    });
+
+    // ── Per-IP message rate limit ──────────────────────────────────────────
+    function checkMessageRate(): boolean {
+      const now = Date.now();
+      const tracker = wsRateTracker.get(ip);
+      if (!tracker || now > tracker.resetAt) {
+        wsRateTracker.set(ip, { count: 1, resetAt: now + WS_RATE_WINDOW_MS });
+        return true;
+      }
+      tracker.count++;
+      if (tracker.count > 200) return false; // max 200 messages per minute per IP
+      return true;
+    }
+
     let sshClient: Client | null = null;
     let connectedServerId: string | null = null;
 
@@ -568,22 +730,28 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
         'else echo "ERROR: unsupported OS (no known package manager to install curl)"; exit 1; fi',
       ].join(" "),
       ensureBasicTools: [
-        'if command -v apt-get >/dev/null 2>&1; then',
-        '  sudo apt-get update -qq;',
-        '  sudo apt-get install -y -qq wget ca-certificates gnupg;',
-        '  sudo apt-get install -y -qq lsb-release 2>/dev/null || true;',
-        '  sudo apt-get install -y -qq apt-transport-https 2>/dev/null || true;',
-        '  sudo apt-get install -y -qq software-properties-common 2>/dev/null || true;',
-        'elif command -v dnf >/dev/null 2>&1; then sudo dnf -y -q install wget ca-certificates gnupg2 redhat-lsb-core;',
-        'elif command -v yum >/dev/null 2>&1; then sudo yum -y -q install wget ca-certificates gnupg2 redhat-lsb-core;',
-        'elif command -v apk >/dev/null 2>&1; then sudo apk add --no-cache wget ca-certificates gnupg;',
-        'elif command -v pacman >/dev/null 2>&1; then sudo pacman -Sy --noconfirm wget ca-certificates gnupg;',
-        'elif command -v zypper >/dev/null 2>&1; then sudo zypper --non-interactive install -y wget ca-certificates gpg2;',
+        "if command -v apt-get >/dev/null 2>&1; then",
+        "  sudo apt-get update -qq;",
+        "  sudo apt-get install -y -qq wget ca-certificates gnupg;",
+        "  sudo apt-get install -y -qq lsb-release 2>/dev/null || true;",
+        "  sudo apt-get install -y -qq apt-transport-https 2>/dev/null || true;",
+        "  sudo apt-get install -y -qq software-properties-common 2>/dev/null || true;",
+        "elif command -v dnf >/dev/null 2>&1; then sudo dnf -y -q install wget ca-certificates gnupg2 redhat-lsb-core;",
+        "elif command -v yum >/dev/null 2>&1; then sudo yum -y -q install wget ca-certificates gnupg2 redhat-lsb-core;",
+        "elif command -v apk >/dev/null 2>&1; then sudo apk add --no-cache wget ca-certificates gnupg;",
+        "elif command -v pacman >/dev/null 2>&1; then sudo pacman -Sy --noconfirm wget ca-certificates gnupg;",
+        "elif command -v zypper >/dev/null 2>&1; then sudo zypper --non-interactive install -y wget ca-certificates gpg2;",
         'else echo "WARN: skipping noncritical prereqs (unknown package manager)"; fi',
       ].join(" "),
     } as const;
 
     ws.on("message", (message: string) => {
+      // ── Rate limit check ────────────────────────────────────────────────
+      if (!checkMessageRate()) {
+        ws.send(JSON.stringify({ type: "error", data: "Rate limit exceeded. Slow down." }));
+        return;
+      }
+
       const data = JSON.parse(message.toString());
 
       if (data.type === "connect") {
@@ -599,7 +767,6 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
         sshClient = new Client();
         sshClient
           .on("ready", () => {
-            // Update server status to online
             const currentDb = getDB();
             const srv = currentDb.servers.find((s: any) => s.id === connectedServerId);
             if (srv) {
@@ -608,7 +775,6 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
             }
 
             ws.send(JSON.stringify({ type: "status", data: "Connected" }));
-            // Start a shell
             sshClient?.shell((err, stream) => {
               if (err) {
                 ws.send(JSON.stringify({ type: "error", data: err.message }));
@@ -620,8 +786,6 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
               stream.on("close", () => {
                 ws.send(JSON.stringify({ type: "status", data: "Disconnected" }));
               });
-              
-              // Handle incoming input
               ws.on("message", (msg: string) => {
                 const input = JSON.parse(msg.toString());
                 if (input.type === "input") {
@@ -643,33 +807,44 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
 
       if (data.type === "deploy") {
         if (!sshClient) {
-          ws.send(JSON.stringify({ type: "error", data: "No active SSH connection. Open a terminal first." }));
+          ws.send(
+            JSON.stringify({ type: "error", data: "No active SSH connection. Open a terminal first." })
+          );
           return;
         }
 
         const { scriptType } = data;
+
+        // scriptType must be one of the known deploy types — no user-controlled data
+        // flows into commands from here
+        const ALLOWED_SCRIPT_TYPES = new Set(["docker", "k3s", "verify", "full"]);
+        if (!ALLOWED_SCRIPT_TYPES.has(scriptType)) {
+          ws.send(JSON.stringify({ type: "error", data: "Unknown script type." }));
+          return;
+        }
+
         let command = "";
-        
+
         if (scriptType === "docker") {
           command = [
-            'set -e',
+            "set -e",
             'echo "[1/3] Ensuring curl..."',
             provisionSnippets.ensureCurl,
             'echo "[2/3] Installing Docker (get.docker.com)..."',
             'if command -v docker > /dev/null 2>&1; then echo "  -> Docker already installed: $(docker --version)"; else curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sudo sh /tmp/get-docker.sh && sudo usermod -aG docker $USER && rm -f /tmp/get-docker.sh && echo "  -> Docker installed successfully"; fi',
             'echo "[3/3] Done."',
-          ].join(' && ');
+          ].join(" && ");
         } else if (scriptType === "k3s") {
           command = [
-            'set -e',
+            "set -e",
             'echo "[1/2] Ensuring curl..."',
             provisionSnippets.ensureCurl,
             'echo "[2/2] Installing K3s..."',
             'if command -v k3s > /dev/null 2>&1; then echo "  -> K3s already installed: $(k3s --version 2>&1 | head -1)"; else curl -sfL https://get.k3s.io | sh - && echo "  -> K3s installed successfully"; fi',
-          ].join(' && ');
+          ].join(" && ");
         } else if (scriptType === "verify") {
           command = [
-            'set -e',
+            "set -e",
             'echo "==========================================="',
             'echo "        KubeCast Stack Verification"',
             'echo "==========================================="',
@@ -687,14 +862,14 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
             'if command -v k3s >/dev/null 2>&1; then sudo k3s kubectl get nodes -o wide || true; else echo "  -> k3s not installed"; fi',
             'echo ""',
             'echo "=== VERIFY COMPLETE ==="',
-          ].join(' && ');
+          ].join(" && ");
         } else if (scriptType === "full") {
           command = [
             'echo "=========================================="',
             'echo "   KubeCast Full Stack Deployment"',
             'echo "=========================================="',
             'echo ""',
-            'set -e',
+            "set -e",
             'echo "[1/5] Ensuring curl..."',
             provisionSnippets.ensureCurl,
             'echo ""',
@@ -714,12 +889,10 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
             'echo "==========================================="',
             'echo ""',
             'echo "=== DEPLOYMENT COMPLETE ==="',
-          ].join(' && ');
+          ].join(" && ");
         }
 
         if (command) {
-          // Use the stored SSH password to satisfy sudo prompts non-interactively.
-          // We avoid embedding the password in the command string; instead we feed it via stdin to `sudo -S`.
           const db = getDB();
           const connectedServer = connectedServerId
             ? db.servers.find((s: any) => s.id === connectedServerId)
@@ -728,18 +901,17 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
 
           const requiresSudo = /\bsudo\b/.test(command);
           if (requiresSudo && !sudoPassword) {
-            ws.send(JSON.stringify({ type: "error", data: "This deploy requires sudo, but no password is stored for this server." }));
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                data: "This deploy requires sudo, but no password is stored for this server.",
+              })
+            );
             return;
           }
 
           const finalCommand = requiresSudo
-            ? [
-                // Refresh sudo timestamp first, then run the original command.
-                // -S: read password from stdin, -p '': no prompt noise.
-                // In a PTY session some distros require a tty for sudo.
-                "sudo -S -p '' -v",
-                command,
-              ].join(" && ")
+            ? ["sudo -S -p '' -v", command].join(" && ")
             : command;
 
           sshClient.exec(finalCommand, { pty: true }, (err, stream) => {
@@ -755,26 +927,19 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
               stream.write(sudoPassword + "\n");
             };
 
-            // Send immediately for sudo -v, and also retry once if we detect a prompt.
             maybeSendSudo();
 
             stream.on("data", (chunk: any) => {
               const text = chunk.toString();
-              // Some sudo configurations still print a prompt (or require a second send).
-              if (!sudoSent && /password/i.test(text)) {
-                maybeSendSudo();
-              }
+              if (!sudoSent && /password/i.test(text)) maybeSendSudo();
               ws.send(JSON.stringify({ type: "data", data: text }));
             });
             stream.stderr.on("data", (chunk: any) => {
               const text = chunk.toString();
-              if (!sudoSent && /password/i.test(text)) {
-                maybeSendSudo();
-              }
+              if (!sudoSent && /password/i.test(text)) maybeSendSudo();
               ws.send(JSON.stringify({ type: "data", data: text }));
             });
             stream.on("close", (code: number) => {
-              // Update installed status in db after deployment
               if (code === 0 && connectedServerId) {
                 const db = getDB();
                 const srv = db.servers.find((s: any) => s.id === connectedServerId);
@@ -783,7 +948,9 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
                   if (scriptType === "k3s" || scriptType === "full") srv.installed.k8s = true;
                   saveDB(db);
                 }
-                ws.send(JSON.stringify({ type: "status", data: `${scriptType} installed successfully` }));
+                ws.send(
+                  JSON.stringify({ type: "status", data: `${scriptType} installed successfully` })
+                );
               }
             });
           });
