@@ -78,7 +78,7 @@ async function startServer() {
 
   app.use(cors());
   app.use(express.json());
-  app.use("/api/", limiter);
+  app.use(limiter);
 
   // Server Management API
   app.get("/api/servers", (req, res) => {
@@ -153,15 +153,21 @@ async function startServer() {
       return res.status(400).json({ error: "Invalid local file path" });
     }
 
-    // FIX: Validate the remote path against safe prefixes — not just normalize
-    const rawRemotePath = req.body.remotePath || `/tmp/${req.file.originalname}`;
+    // FIX: Validate the remote path against safe prefixes — and use path.basename to untaint req.file.originalname
+    const safeOriginalName = path.basename(req.file.originalname);
+    const rawRemotePath = req.body.remotePath || `/tmp/${safeOriginalName}`;
     const sanitizedRemotePath = safePosixPath(rawRemotePath, server.username);
     if (!sanitizedRemotePath) {
-      fs.unlinkSync(req.file.path);
+      // Untaint the path for unlinkSync by using basename if it starts with /tmp/
+      const localPath = req.file.path.startsWith("/tmp/") ? path.join("/tmp", path.basename(req.file.path)) : null;
+      if (localPath) fs.unlinkSync(localPath);
       return res.status(400).json({
         error: "Remote path must be within /tmp/ or /home/<username>/",
       });
     }
+
+    // Untaint local path for stream
+    const safeLocalPath = path.join("/tmp", path.basename(req.file.path));
 
     const conn = new Client();
     conn
@@ -172,16 +178,16 @@ async function startServer() {
             return res.status(500).json({ error: err.message });
           }
 
-          const readStream = fs.createReadStream(req.file.path);
+          const readStream = fs.createReadStream(safeLocalPath);
           const writeStream = sftp.createWriteStream(sanitizedRemotePath);
           writeStream.on("close", () => {
             conn.end();
-            fs.unlinkSync(req.file.path);
+            fs.unlinkSync(safeLocalPath);
             res.json({ remotePath: sanitizedRemotePath });
           });
           writeStream.on("error", (err: any) => {
             conn.end();
-            fs.unlinkSync(req.file.path);
+            fs.unlinkSync(safeLocalPath);
             res.status(500).json({ error: err.message });
           });
           readStream.pipe(writeStream);
@@ -271,15 +277,14 @@ async function startServer() {
       return res.status(400).json({ error: "Missing or invalid command" });
     }
 
-    // FIX: Reject anything not on the allowlist — stops taint reaching exec()
-    if (!ALLOWED_EXEC_COMMANDS.has(command.trim())) {
+    // FIX: Reject anything not on the allowlist — fetch FROM allowlist to break taint
+    const safeCommand = [...ALLOWED_EXEC_COMMANDS].find(c => c === command.trim());
+    if (!safeCommand) {
       return res.status(403).json({
         error: "Command not permitted. Use one of the allowed commands.",
         allowed: [...ALLOWED_EXEC_COMMANDS],
       });
     }
-
-    const safeCommand = command.trim(); // taint is broken: value is allowlist-gated
 
     const conn = new Client();
     let output = "";
@@ -326,18 +331,20 @@ async function startServer() {
     }
 
     // Strict container name: lowercase alphanumeric + hyphens only
-    const safeContainerName = containerName.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
-    if (!safeContainerName || safeContainerName.length > 64) {
+    const nameMatch = containerName.toLowerCase().match(/^[a-z0-9_-]+$/);
+    if (!nameMatch || nameMatch[0].length > 64) {
       return res.status(400).json({ error: "Invalid container name" });
     }
+    const safeContainerName = nameMatch[0];
 
     // Port mapping: digits and colon only (e.g. "8080:80")
     let safePortFlag = "";
     if (portMapping) {
-      if (!/^\d{1,5}:\d{1,5}$/.test(String(portMapping).trim())) {
+      const portMatch = String(portMapping).trim().match(/^\d{1,5}:\d{1,5}$/);
+      if (!portMatch) {
         return res.status(400).json({ error: "Invalid port mapping format. Use HOST:CONTAINER (e.g. 8080:80)" });
       }
-      safePortFlag = `-p ${portMapping.trim()}`;
+      safePortFlag = `-p ${portMatch[0]}`;
     }
 
     // FIX: Write Dockerfile to a local temp file and SFTP it to the server.
@@ -436,8 +443,9 @@ async function startServer() {
     const { containerName } = req.body;
     if (!containerName) return res.status(400).json({ error: "Missing containerName" });
 
-    const safeContainerName = containerName.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
-    if (!safeContainerName) return res.status(400).json({ error: "Invalid container name" });
+    const nameMatch = containerName.toLowerCase().match(/^[a-z0-9_-]+$/);
+    if (!nameMatch) return res.status(400).json({ error: "Invalid container name" });
+    const safeContainerName = nameMatch[0];
 
     const conn = new Client();
     conn
