@@ -7,7 +7,16 @@ import { WebSocketServer } from "ws";
 import fs from "fs";
 import cors from "cors";
 import multer from "multer";
+import { rateLimit } from "express-rate-limit";
+
 const upload = multer({ dest: "/tmp" });
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,6 +42,7 @@ async function startServer() {
 
   app.use(cors());
   app.use(express.json());
+  app.use("/api/", limiter);
 
   // Server Management API
   app.get("/api/servers", (req, res) => {
@@ -110,8 +120,18 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
           conn.end();
           return res.status(500).json({ error: err.message });
         }
+        if (!req.file || !req.file.path.startsWith("/tmp/")) {
+          conn.end();
+          return res.status(400).json({ error: "Invalid file path" });
+        }
+        
+        // Sanitize remote path to prevent traversal and ensure it's absolute or relative to home
+        const sanitizedRemotePath = remotePath.startsWith('/') 
+          ? path.posix.normalize(remotePath)
+          : path.posix.join('.', path.posix.normalize(remotePath)).replace(/^(\.\.(\/|\\|$))+/, '');
+        
         const readStream = fs.createReadStream(req.file.path);
-        const writeStream = sftp.createWriteStream(remotePath);
+        const writeStream = sftp.createWriteStream(sanitizedRemotePath);
         writeStream.on("close", () => {
           conn.end();
           fs.unlinkSync(req.file.path);
@@ -196,7 +216,7 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
     const server = db.servers.find((s: any) => s.id === req.params.id);
     if (!server) return res.status(404).json({ error: "Server not found" });
     const { command } = req.body;
-    if (!command) return res.status(400).json({ error: "Missing command" });
+    if (!command || typeof command !== 'string') return res.status(400).json({ error: "Missing or invalid command" });
     const conn = new Client();
     let output = "";
     let error = "";
@@ -233,6 +253,7 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
     
     // Docker repository names must be lowercase and valid
     const safeContainerName = containerName.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    if (!safeContainerName) return res.status(400).json({ error: "Invalid container name" });
     
     const conn = new Client();
     conn.on("ready", () => {
@@ -243,7 +264,11 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
       
       let portFlag = "";
       if (portMapping) {
-        portFlag = `-p ${portMapping}`;
+        // Sanitize port mapping to allow only numbers, dots, colons, and slashes
+        const safePortMapping = String(portMapping).replace(/[^0-9a-zA-Z.:/-]/g, '');
+        if (safePortMapping) {
+          portFlag = `-p ${safePortMapping}`;
+        }
       }
 
       const innerScript = [
@@ -292,6 +317,7 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
     if (!containerName) return res.status(400).json({ error: "Missing containerName" });
     
     const safeContainerName = containerName.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    if (!safeContainerName) return res.status(400).json({ error: "Invalid container name" });
     const conn = new Client();
     conn.on("ready", () => {
       // Use docker rm -f to force stop and remove in one command
