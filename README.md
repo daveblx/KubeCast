@@ -6,6 +6,9 @@ This repository provides a streamlined approach to installing and deploying Dock
 - Cluster Orchestration: Configures Kubernetes components for immediate cluster initialization.
 - Infrastructure as Code: Includes deployment configurations to reduce manual setup errors.
 - System Optimization: Designed for minimal environments to maximize resource availability for containers.
+- Monitoring: Shows system health and traffic load.
+- Prod Test: Checks if everything on the sever is up and running and gives back a system report.
+- Nuke Server: Get rid of all KubeCast related content on a server.
   
 ## Tech Stack
 - Runtime: Docker
