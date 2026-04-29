@@ -18,7 +18,9 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
-  ArrowRight
+  ArrowRight,
+  Box,
+  Play
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Server, Cluster, ClusterState } from './types';
@@ -52,6 +54,7 @@ export default function App() {
   const [nuclearTarget, setNuclearTarget] = useState<Server | null>(null);
   const [nuclearStep, setNuclearStep] = useState<0 | 1 | 2>(0);
   const [destroying, setDestroying] = useState<string | null>(null);
+  const [deployDockerServer, setDeployDockerServer] = useState<Server | null>(null);
 
   useEffect(() => {
     fetchServers();
@@ -838,6 +841,20 @@ export default function App() {
               setNuclearTarget(target);
               setNuclearStep(1);
             }}
+            onDeployDocker={() => {
+              const target = serverSettings;
+              setServerSettings(null);
+              setDeployDockerServer(target);
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {deployDockerServer && (
+          <DeployDockerfileModal
+            server={deployDockerServer}
+            onClose={() => setDeployDockerServer(null)}
           />
         )}
       </AnimatePresence>
@@ -1579,6 +1596,7 @@ function ServerSettingsModal({
   onVerify,
   onAnalyzeLogs,
   onNuke,
+  onDeployDocker,
 }: {
   server: Server;
   maintenanceMode: boolean;
@@ -1588,6 +1606,7 @@ function ServerSettingsModal({
   onVerify: () => void;
   onAnalyzeLogs: () => void;
   onNuke: () => void;
+  onDeployDocker: () => void;
 }) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-gray-900/40 backdrop-blur-sm">
@@ -1626,8 +1645,14 @@ function ServerSettingsModal({
             Analyze Logs
           </button>
           <button 
+            onClick={onDeployDocker} 
+            className="py-3 px-4 rounded-xl border border-blue-200 bg-blue-50 hover:bg-blue-100 font-bold text-sm text-blue-700 flex items-center justify-center gap-2"
+          >
+            <Box className="w-4 h-4" /> Custom App
+          </button>
+          <button 
             onClick={onNuke} 
-            className="py-3 px-4 rounded-xl border-2 border-red-100 bg-red-50 hover:bg-red-100 font-bold text-sm text-red-600 flex items-center justify-center gap-2"
+            className="py-3 px-4 rounded-xl border-2 border-red-100 bg-red-50 hover:bg-red-100 font-bold text-sm text-red-600 flex items-center justify-center gap-2 col-span-2"
           >
             <Shield className="w-4 h-4" /> Nuke Server
           </button>
@@ -2229,6 +2254,190 @@ function NuclearConfirmationModal({ server, isDestroying, onConfirm, onClose }: 
               className={`flex-2 py-4 px-8 rounded-xl font-bold text-white transition-all shadow-lg shadow-red-600/20 ${typedHost === server.host && !isDestroying ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-200 cursor-not-allowed'}`}
             >
               {isDestroying ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Confirm Destruction'}
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+const DOCKER_TEMPLATES = {
+  custom: "FROM ubuntu:latest\nCMD echo 'Hello World'\n",
+  nginx: "FROM nginx:alpine\nCOPY . /usr/share/nginx/html\nEXPOSE 80\n",
+  nodejs: "FROM node:18-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm install\nCOPY . .\nEXPOSE 3000\nCMD [\"node\", \"index.js\"]\n",
+  python: "FROM python:3.10-slim\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\nCOPY . .\nEXPOSE 8000\nCMD [\"python\", \"app.py\"]\n",
+  nextcloud: "FROM nextcloud:apache\n# Nextcloud personal cloud service\n# Requires a database or uses SQLite by default\n",
+};
+
+function DeployDockerfileModal({ server, onClose }: { server: Server, onClose: () => void }) {
+  const [template, setTemplate] = useState<keyof typeof DOCKER_TEMPLATES>('custom');
+  const [dockerfile, setDockerfile] = useState(DOCKER_TEMPLATES.custom);
+  const [containerName, setContainerName] = useState('my-app');
+  const [portMapping, setPortMapping] = useState('8080:80');
+  const [status, setStatus] = useState<'idle' | 'deploying' | 'success' | 'error'>('idle');
+  const [logs, setLogs] = useState('');
+
+  const handleTemplateChange = (t: keyof typeof DOCKER_TEMPLATES) => {
+    setTemplate(t);
+    setDockerfile(DOCKER_TEMPLATES[t]);
+    if (t === 'nginx') setPortMapping('8080:80');
+    if (t === 'nodejs') setPortMapping('3000:3000');
+    if (t === 'python') setPortMapping('8000:8000');
+    if (t === 'nextcloud') {
+      setPortMapping('8080:80');
+      setContainerName('my-nextcloud');
+    }
+  };
+
+  const handleStop = async () => {
+    setStatus('deploying');
+    setLogs('Stopping and removing ' + containerName + ' on ' + server.name + '...\n');
+    try {
+      const res = await fetch(`/api/servers/${server.id}/stop-container`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ containerName })
+      });
+      const data = await res.json();
+      if (res.ok && data.code === 0) {
+        setStatus('success');
+        setLogs(prev => prev + '\nSuccessfully removed container!\n' + data.output);
+      } else {
+        setStatus('error');
+        setLogs(prev => prev + '\nFailed to remove container.\n' + data.error + '\n' + data.output);
+      }
+    } catch (e) {
+      setStatus('error');
+      setLogs(prev => prev + '\nNetwork Error: ' + String(e));
+    }
+  };
+
+  const handleDeploy = async () => {
+    setStatus('deploying');
+    setLogs('Initiating Docker deployment on ' + server.name + '...\n');
+    try {
+      const res = await fetch(`/api/servers/${server.id}/deploy-dockerfile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dockerfile, containerName, portMapping })
+      });
+      const data = await res.json();
+      if (res.ok && data.code === 0) {
+        setStatus('success');
+        setLogs(prev => prev + '\nDeployment successful!\n' + data.output);
+      } else {
+        setStatus('error');
+        setLogs(prev => prev + '\nDeployment failed.\n' + data.error + '\n' + data.output);
+      }
+    } catch (e) {
+      setStatus('error');
+      setLogs(prev => prev + '\nNetwork or API Error: ' + String(e));
+    }
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="fixed inset-0 z-[100] flex items-center justify-center p-4 md:p-8 bg-gray-900/60 backdrop-blur-sm">
+      <motion.div 
+        initial={{ y: 4, opacity: 0 }} 
+        animate={{ y: 0, opacity: 1 }} 
+        exit={{ y: 4, opacity: 0 }} 
+        transition={{ type: "tween", ease: "easeOut", duration: 0.15 }}
+        className="bg-white border border-gray-200 rounded-[2rem] w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
+      >
+        <div className="p-6 border-b border-gray-100 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3">
+             <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center border border-blue-100 text-blue-600">
+               <Box className="w-5 h-5" />
+             </div>
+             <div>
+               <h2 className="text-xl font-bold tracking-tight">Deploy Custom App</h2>
+               <p className="text-xs text-gray-500 font-medium">Build and run a Dockerfile on <span className="font-mono text-gray-700">{server.name}</span></p>
+             </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-900 transition-colors bg-gray-50 hover:bg-gray-100 p-2 rounded-full">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-6 flex-1 overflow-y-auto space-y-6 bg-gray-50/50">
+          <div className="grid grid-cols-2 gap-4">
+             <div>
+               <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-1.5">Container Name</label>
+               <input 
+                 value={containerName} 
+                 onChange={e => setContainerName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '-'))}
+                 className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:border-blue-500 transition-all shadow-sm"
+                 placeholder="e.g. my-app"
+               />
+             </div>
+             <div>
+               <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-1.5">Port Mapping (Host:Container)</label>
+               <input 
+                 value={portMapping} 
+                 onChange={e => setPortMapping(e.target.value)}
+                 className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-sm font-mono outline-none focus:border-blue-500 transition-all shadow-sm"
+                 placeholder="e.g. 8080:80"
+               />
+             </div>
+          </div>
+
+          <div>
+             <div className="flex items-center justify-between mb-2">
+               <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest">Dockerfile</label>
+               <div className="flex gap-2">
+                 {(['custom', 'nginx', 'nodejs', 'python', 'nextcloud'] as const).map(t => (
+                   <button
+                     key={t}
+                     onClick={() => handleTemplateChange(t)}
+                     className={`px-3 py-1 text-xs font-bold rounded-lg transition-colors border ${template === t ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}
+                   >
+                     {t.charAt(0).toUpperCase() + t.slice(1)}
+                   </button>
+                 ))}
+               </div>
+             </div>
+             <textarea 
+               value={dockerfile}
+               onChange={e => setDockerfile(e.target.value)}
+               className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-4 text-sm font-mono text-emerald-400 outline-none focus:ring-2 focus:ring-blue-500 shadow-inner h-64 resize-y"
+               spellCheck={false}
+             />
+          </div>
+
+          {logs && (
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-1.5">Deployment Logs</label>
+              <div className="bg-black rounded-xl p-4 text-[11px] font-mono text-gray-300 h-48 overflow-y-auto border border-gray-800 shadow-inner whitespace-pre-wrap">
+                {logs}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="p-6 border-t border-gray-100 flex gap-3 justify-between items-center bg-white shrink-0">
+          <button 
+            onClick={handleStop}
+            disabled={status === 'deploying'}
+            className="px-4 py-3 rounded-xl font-bold text-red-600 hover:bg-red-50 border border-transparent hover:border-red-100 transition-colors disabled:opacity-50 flex items-center gap-2 text-sm"
+          >
+            <Trash2 className="w-4 h-4" /> Stop & Remove App
+          </button>
+          
+          <div className="flex gap-3">
+            <button 
+              onClick={onClose} 
+              className="px-6 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-100 transition-colors"
+            >
+              {status === 'success' ? 'Done' : 'Cancel'}
+            </button>
+            <button 
+              onClick={handleDeploy}
+              disabled={status === 'deploying'}
+              className="px-8 py-3 rounded-xl font-bold text-white transition-all shadow-lg bg-blue-600 hover:bg-blue-700 shadow-blue-600/20 disabled:bg-gray-400 flex items-center gap-2"
+            >
+              {status === 'deploying' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
+              {status === 'deploying' ? 'Deploying...' : status === 'error' ? 'Retry Deploy' : 'Deploy Container'}
             </button>
           </div>
         </div>

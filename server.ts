@@ -223,6 +223,104 @@ app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res) => {
     });
   });
   
+  // --- DevOps: Deploy Custom Dockerfile ---
+  app.post("/api/servers/:id/deploy-dockerfile", (req, res) => {
+    const db = getDB();
+    const server = db.servers.find((s: any) => s.id === req.params.id);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+    const { dockerfile, containerName, portMapping } = req.body;
+    if (!dockerfile || !containerName) return res.status(400).json({ error: "Missing parameters" });
+    
+    // Docker repository names must be lowercase and valid
+    const safeContainerName = containerName.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    
+    const conn = new Client();
+    conn.on("ready", () => {
+      // Create a temporary directory, write the Dockerfile, build, and run
+      // We encode the dockerfile to base64 to avoid escaping issues in bash
+      const base64Dockerfile = Buffer.from(dockerfile).toString('base64');
+      const workDir = `/tmp/kubecast-deploy-${safeContainerName}-${Date.now()}`;
+      
+      let portFlag = "";
+      if (portMapping) {
+        portFlag = `-p ${portMapping}`;
+      }
+
+      const innerScript = [
+        `mkdir -p ${workDir}`,
+        `echo "${base64Dockerfile}" | base64 -d > ${workDir}/Dockerfile`,
+        `docker build -t ${safeContainerName} ${workDir}`,
+        `docker rm -f ${safeContainerName} 2>/dev/null || true`,
+        `docker run -d --name ${safeContainerName} ${portFlag} ${safeContainerName}`,
+        `rm -rf ${workDir}`
+      ].join(" && ");
+
+      const script = `sudo -S -p '' bash -c '${innerScript}'`;
+
+      // Run script with sudo password injection
+      conn.exec(script, (err, stream) => {
+        if (err) {
+          conn.end();
+          return res.status(500).json({ error: err.message });
+        }
+        stream.write(server.password + "\n");
+        let output = "";
+        let error = "";
+        stream.on("data", (data) => output += data.toString());
+        stream.stderr.on("data", (data) => error += data.toString());
+        stream.on("close", (code) => {
+          conn.end();
+          res.json({ code, output, error });
+        });
+      });
+    }).on("error", (err) => {
+      res.status(500).json({ error: "Connection failed: " + err.message });
+    }).connect({
+      host: server.host,
+      port: server.port || 22,
+      username: server.username,
+      password: server.password,
+    });
+  });
+
+  // --- DevOps: Stop and Remove Container ---
+  app.post("/api/servers/:id/stop-container", (req, res) => {
+    const db = getDB();
+    const server = db.servers.find((s: any) => s.id === req.params.id);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+    const { containerName } = req.body;
+    if (!containerName) return res.status(400).json({ error: "Missing containerName" });
+    
+    const safeContainerName = containerName.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    const conn = new Client();
+    conn.on("ready", () => {
+      // Use docker rm -f to force stop and remove in one command
+      const script = `sudo -S -p '' docker rm -f ${safeContainerName}`;
+      conn.exec(script, (err, stream) => {
+        if (err) {
+          conn.end();
+          return res.status(500).json({ error: err.message });
+        }
+        stream.write(server.password + "\n");
+        let output = "";
+        let error = "";
+        stream.on("data", (data) => output += data.toString());
+        stream.stderr.on("data", (data) => error += data.toString());
+        stream.on("close", (code) => {
+          conn.end();
+          res.json({ code, output, error });
+        });
+      });
+    }).on("error", (err) => {
+      res.status(500).json({ error: "Connection failed: " + err.message });
+    }).connect({
+      host: server.host,
+      port: server.port || 22,
+      username: server.username,
+      password: server.password,
+    });
+  });
+  
   // --- Cluster: Deploy Sample App ---
   app.post("/api/clusters/:id/deploy-sample", async (req, res) => {
     const db = getDB();
