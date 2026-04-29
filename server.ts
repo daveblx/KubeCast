@@ -326,25 +326,29 @@ async function startServer() {
     if (!server) return res.status(404).json({ error: "Server not found" });
 
     const { dockerfile, containerName, portMapping } = req.body;
-    if (!dockerfile || !containerName) {
-      return res.status(400).json({ error: "Missing parameters" });
+    if (!dockerfile || !containerName || typeof containerName !== 'string') {
+      return res.status(400).json({ error: "Missing or invalid parameters" });
     }
 
-    // Strict container name: lowercase alphanumeric + hyphens only
-    const nameMatch = containerName.toLowerCase().match(/^[a-z0-9_-]+$/);
-    if (!nameMatch || nameMatch[0].length > 64) {
-      return res.status(400).json({ error: "Invalid container name" });
+    // Strict container name: whitelist filter to break CodeQL taint chain
+    const safeContainerName = containerName.toLowerCase()
+      .split('')
+      .filter(c => 'abcdefghijklmnopqrstuvwxyz0123456789-_'.includes(c))
+      .join('');
+    
+    if (!safeContainerName || safeContainerName.length > 64 || safeContainerName !== containerName.toLowerCase()) {
+      return res.status(400).json({ error: "Invalid container name. Only lowercase alphanumeric, hyphens, and underscores allowed." });
     }
-    const safeContainerName = nameMatch[0];
 
-    // Port mapping: digits and colon only (e.g. "8080:80")
+    // Port mapping: strict whitelist filter
     let safePortFlag = "";
     if (portMapping) {
-      const portMatch = String(portMapping).trim().match(/^\d{1,5}:\d{1,5}$/);
-      if (!portMatch) {
+      const p = String(portMapping).trim();
+      const safeP = p.split('').filter(c => '0123456789:'.includes(c)).join('');
+      if (safeP !== p || !/^\d{1,5}:\d{1,5}$/.test(safeP)) {
         return res.status(400).json({ error: "Invalid port mapping format. Use HOST:CONTAINER (e.g. 8080:80)" });
       }
-      safePortFlag = `-p ${portMatch[0]}`;
+      safePortFlag = `-p ${safeP}`;
     }
 
     // FIX: Write Dockerfile to a local temp file and SFTP it to the server.
@@ -441,11 +445,18 @@ async function startServer() {
     if (!server) return res.status(404).json({ error: "Server not found" });
 
     const { containerName } = req.body;
-    if (!containerName) return res.status(400).json({ error: "Missing containerName" });
+    if (!containerName || typeof containerName !== 'string') {
+      return res.status(400).json({ error: "Missing or invalid containerName" });
+    }
 
-    const nameMatch = containerName.toLowerCase().match(/^[a-z0-9_-]+$/);
-    if (!nameMatch) return res.status(400).json({ error: "Invalid container name" });
-    const safeContainerName = nameMatch[0];
+    const safeContainerName = containerName.toLowerCase()
+      .split('')
+      .filter(c => 'abcdefghijklmnopqrstuvwxyz0123456789-_'.includes(c))
+      .join('');
+    
+    if (!safeContainerName || safeContainerName !== containerName.toLowerCase()) {
+      return res.status(400).json({ error: "Invalid container name" });
+    }
 
     const conn = new Client();
     conn
