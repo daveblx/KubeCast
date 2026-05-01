@@ -8,6 +8,7 @@ import fs from "fs";
 import cors from "cors";
 import multer from "multer";
 import { rateLimit } from "express-rate-limit";
+import crypto from "crypto";
 
 const upload = multer({ dest: "/tmp" });
 
@@ -72,11 +73,25 @@ function safePosixPath(userInput: string, username: string): string | null {
   return null;
 }
 
+/**
+ * Untaints a string by matching it against a strict regex and returning the match group.
+ * This is a recognized pattern for satisfying CodeQL taint tracking.
+ */
+function untaint(input: string, pattern: RegExp): string | null {
+  if (typeof input !== 'string') return null;
+  const match = input.match(pattern);
+  return match ? match[0] : null;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(cors());
+  // FIX: Harden CORS to prevent arbitrary cross-origin requests
+  app.use(cors({
+    origin: process.env.NODE_ENV === "production" ? false : "*", // In prod, API and SPA are on same origin, so cross-origin is not needed
+    methods: ["GET", "POST", "PUT", "DELETE"]
+  }));
   app.use(express.json());
   app.use(limiter);
 
@@ -97,7 +112,7 @@ async function startServer() {
 
     const db = getDB();
     const newServer = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: crypto.randomUUID(),
       name,
       host,
       username,
@@ -278,7 +293,14 @@ async function startServer() {
     }
 
     // FIX: Reject anything not on the allowlist — fetch FROM allowlist to break taint
-    const safeCommand = [...ALLOWED_EXEC_COMMANDS].find(c => c === command.trim());
+    let safeCommand = "";
+    for (const allowedCmd of ALLOWED_EXEC_COMMANDS) {
+      if (allowedCmd === command.trim()) {
+        safeCommand = allowedCmd;
+        break;
+      }
+    }
+
     if (!safeCommand) {
       return res.status(403).json({
         error: "Command not permitted. Use one of the allowed commands.",
@@ -330,25 +352,20 @@ async function startServer() {
       return res.status(400).json({ error: "Missing or invalid parameters" });
     }
 
-    // Strict container name: whitelist filter to break CodeQL taint chain
-    const safeContainerName = containerName.toLowerCase()
-      .split('')
-      .filter(c => 'abcdefghijklmnopqrstuvwxyz0123456789-_'.includes(c))
-      .join('');
-    
-    if (!safeContainerName || safeContainerName.length > 64 || safeContainerName !== containerName.toLowerCase()) {
+    // Strict container name: whitelist match to break CodeQL taint chain
+    const safeContainerName = untaint(containerName.toLowerCase(), /^[a-z0-9_-]{1,64}$/);
+    if (!safeContainerName) {
       return res.status(400).json({ error: "Invalid container name. Only lowercase alphanumeric, hyphens, and underscores allowed." });
     }
 
-    // Port mapping: strict whitelist filter
+    // Port mapping: strict whitelist match
     let safePortFlag = "";
     if (portMapping) {
-      const p = String(portMapping).trim();
-      const safeP = p.split('').filter(c => '0123456789:'.includes(c)).join('');
-      if (safeP !== p || !/^\d{1,5}:\d{1,5}$/.test(safeP)) {
+      const untaintedPort = untaint(String(portMapping).trim(), /^\d{1,5}:\d{1,5}$/);
+      if (!untaintedPort) {
         return res.status(400).json({ error: "Invalid port mapping format. Use HOST:CONTAINER (e.g. 8080:80)" });
       }
-      safePortFlag = `-p ${safeP}`;
+      safePortFlag = `-p ${untaintedPort}`;
     }
 
     // FIX: Write Dockerfile to a local temp file and SFTP it to the server.
@@ -449,12 +466,8 @@ async function startServer() {
       return res.status(400).json({ error: "Missing or invalid containerName" });
     }
 
-    const safeContainerName = containerName.toLowerCase()
-      .split('')
-      .filter(c => 'abcdefghijklmnopqrstuvwxyz0123456789-_'.includes(c))
-      .join('');
-    
-    if (!safeContainerName || safeContainerName !== containerName.toLowerCase()) {
+    const safeContainerName = untaint(containerName.toLowerCase(), /^[a-z0-9_-]{1,64}$/);
+    if (!safeContainerName) {
       return res.status(400).json({ error: "Invalid container name" });
     }
 
@@ -600,7 +613,7 @@ async function startServer() {
     if (!name) return res.status(400).json({ error: "name is required" });
     const db = getDB();
     const newCluster = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: crypto.randomUUID(),
       name,
       serverIds: serverIds || [],
     };
@@ -708,6 +721,17 @@ async function startServer() {
   const wsRateTracker = new Map<string, { count: number; resetAt: number }>();
 
   wss.on("connection", (ws, req) => {
+    // ── WebSocket Origin Validation (CSWSH protection) ───────────────────
+    const origin = req.headers.origin;
+    if (origin && process.env.NODE_ENV === "production") {
+      // Basic check: in production, origin must match host
+      const host = req.headers.host;
+      if (origin !== `http://${host}` && origin !== `https://${host}`) {
+        ws.close(1008, "Origin not allowed");
+        return;
+      }
+    }
+
     const ip = req.socket.remoteAddress ?? "unknown";
 
     // ── Per-IP connection cap ──────────────────────────────────────────────
