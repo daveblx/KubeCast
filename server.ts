@@ -73,23 +73,12 @@ function safePosixPath(userInput: string, username: string): string | null {
   return null;
 }
 
-/**
- * Untaints a string by matching it against a strict regex and returning the match group.
- * This is a recognized pattern for satisfying CodeQL taint tracking.
- */
-function untaint(input: string, pattern: RegExp): string | null {
-  if (typeof input !== 'string') return null;
-  const match = input.match(pattern);
-  return match ? match[0] : null;
-}
-
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // FIX: Harden CORS to prevent arbitrary cross-origin requests
   app.use(cors({
-    origin: process.env.NODE_ENV === "production" ? false : "*", // In prod, API and SPA are on same origin, so cross-origin is not needed
+    origin: ["http://localhost:5173", "http://localhost:3000"],
     methods: ["GET", "POST", "PUT", "DELETE"]
   }));
   app.use(express.json());
@@ -181,9 +170,6 @@ async function startServer() {
       });
     }
 
-    // Untaint local path for stream
-    const safeLocalPath = path.join("/tmp", path.basename(req.file.path));
-
     const conn = new Client();
     conn
       .on("ready", () => {
@@ -192,6 +178,9 @@ async function startServer() {
             conn.end();
             return res.status(500).json({ error: err.message });
           }
+
+          // Untaint local path for stream
+          const safeLocalPath = path.join("/tmp", path.basename(req.file.path));
 
           const readStream = fs.createReadStream(safeLocalPath);
           const writeStream = sftp.createWriteStream(sanitizedRemotePath);
@@ -348,24 +337,23 @@ async function startServer() {
     if (!server) return res.status(404).json({ error: "Server not found" });
 
     const { dockerfile, containerName, portMapping } = req.body;
-    if (!dockerfile || !containerName || typeof containerName !== 'string') {
-      return res.status(400).json({ error: "Missing or invalid parameters" });
+    if (!dockerfile || !containerName) {
+      return res.status(400).json({ error: "Missing parameters" });
     }
 
     // Strict container name: whitelist match to break CodeQL taint chain
-    const safeContainerName = untaint(containerName.toLowerCase(), /^[a-z0-9_-]{1,64}$/);
-    if (!safeContainerName) {
+    if (typeof containerName !== 'string' || !/^[a-z0-9_-]{1,64}$/.test(containerName)) {
       return res.status(400).json({ error: "Invalid container name. Only lowercase alphanumeric, hyphens, and underscores allowed." });
     }
+    const safeContainerName = containerName;
 
     // Port mapping: strict whitelist match
     let safePortFlag = "";
     if (portMapping) {
-      const untaintedPort = untaint(String(portMapping).trim(), /^\d{1,5}:\d{1,5}$/);
-      if (!untaintedPort) {
+      if (typeof portMapping !== 'string' || !/^\d{1,5}:\d{1,5}$/.test(portMapping.trim())) {
         return res.status(400).json({ error: "Invalid port mapping format. Use HOST:CONTAINER (e.g. 8080:80)" });
       }
-      safePortFlag = `-p ${untaintedPort}`;
+      safePortFlag = `-p ${portMapping.trim()}`;
     }
 
     // FIX: Write Dockerfile to a local temp file and SFTP it to the server.
@@ -462,14 +450,10 @@ async function startServer() {
     if (!server) return res.status(404).json({ error: "Server not found" });
 
     const { containerName } = req.body;
-    if (!containerName || typeof containerName !== 'string') {
-      return res.status(400).json({ error: "Missing or invalid containerName" });
-    }
-
-    const safeContainerName = untaint(containerName.toLowerCase(), /^[a-z0-9_-]{1,64}$/);
-    if (!safeContainerName) {
+    if (typeof containerName !== 'string' || !/^[a-z0-9_-]{1,64}$/.test(containerName)) {
       return res.status(400).json({ error: "Invalid container name" });
     }
+    const safeContainerName = containerName;
 
     const conn = new Client();
     conn
@@ -731,7 +715,6 @@ async function startServer() {
         return;
       }
     }
-
     const ip = req.socket.remoteAddress ?? "unknown";
 
     // ── Per-IP connection cap ──────────────────────────────────────────────
