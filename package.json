@@ -1,7 +1,9 @@
 {
-  "name": "react-example",
+  "name": "kubecast",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
+  "description": "KubeCast - Kubernetes Management Dashboard",
+  "author": "David Blachnitzky",
   "type": "module",
   "main": "main.js",
   "scripts": {
@@ -12,7 +14,8 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "electron:dev": "cross-env NODE_ENV=development concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron:build": "npm run build && electron-builder -m"
+    "electron:build": "npm run build && electron-builder -m",
+    "dist": "npm run electron:build"
   },
   "build": {
     "appId": "com.kubecast.app",
@@ -21,7 +24,10 @@
     },
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": ["dmg"]
+      "target": [
+        "dmg"
+      ],
+      "icon": "assets/icon.icns"
     },
     "files": [
       "dist/**/*",
@@ -30,10 +36,6 @@
     ]
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.1.14",
-    "@types/ssh2": "^1.15.5",
-    "@types/ws": "^8.18.1",
-    "@vitejs/plugin-react": "^5.0.4",
     "axios": "^1.15.2",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",
@@ -47,7 +49,6 @@
     "react-dom": "^19.0.0",
     "ssh2": "^1.17.0",
     "tailwind-merge": "^3.5.0",
-    "vite": "^6.2.0",
     "ws": "^8.20.0"
   },
   "devDependencies": {
@@ -66,6 +67,11 @@
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0",
-    "wait-on": "^9.0.5"
+    "wait-on": "^9.0.5",
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/ssh2": "^1.15.5",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^5.0.4",
+    "vite": "^6.4.2"
   }
 }
