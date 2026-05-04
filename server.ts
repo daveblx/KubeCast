@@ -9,6 +9,7 @@ import cors from "cors";
 import multer from "multer";
 import { rateLimit } from "express-rate-limit";
 import crypto from "crypto";
+import os from "os";
 
 const upload = multer({ dest: "/tmp" });
 
@@ -362,10 +363,12 @@ async function startServer() {
 
     // FIX: Write Dockerfile to a local temp file and SFTP it to the server.
     // This avoids embedding user-controlled dockerfile content in any shell string.
-    const localTmpPath = `/tmp/kubecast-dockerfile-${Date.now()}`;
+    const localTmpPath = path.join(os.tmpdir(), `kubecast-dockerfile-${Date.now()}`);
     try {
       fs.writeFileSync(localTmpPath, dockerfile);
+      console.log(`[DEPLOY] Temporary Dockerfile written to ${localTmpPath}`);
     } catch (e: any) {
+      console.error(`[DEPLOY] Failed to write temp Dockerfile: ${e.message}`);
       return res.status(500).json({ error: "Failed to write temp Dockerfile: " + e.message });
     }
 
@@ -374,70 +377,66 @@ async function startServer() {
     const conn = new Client();
     conn
       .on("ready", () => {
-        conn.sftp((err: any, sftp: any) => {
+        console.log(`[SSH] Connected to ${server.host}`);
+        
+        const remoteDockerfile = `${workDir}/Dockerfile`;
+        const setupCmd = `mkdir -p ${workDir} && cat > ${remoteDockerfile}`;
+        
+        console.log(`[SSH] Setting up deployment dir and Dockerfile...`);
+        conn.exec(setupCmd, (err, stream) => {
           if (err) {
             conn.end();
-            fs.unlinkSync(localTmpPath);
             return res.status(500).json({ error: err.message });
           }
 
-          // First: create working directory via exec (hardcoded path, no user input)
-          conn.exec(`mkdir -p ${workDir}`, (mkErr, mkStream) => {
-            if (mkErr) {
+          stream.on("data", (d) => console.log(`[SSH-STDOUT] ${d}`));
+          stream.stderr.on("data", (d) => console.error(`[SSH-STDERR] ${d}`));
+
+          // Send Dockerfile content and close stdin
+          stream.write(dockerfile);
+          stream.end();
+
+          stream.on("close", (code) => {
+            console.log(`[SSH] Setup finished with code ${code}`);
+            if (code !== 0) {
               conn.end();
-              fs.unlinkSync(localTmpPath);
-              return res.status(500).json({ error: mkErr.message });
+              return res.status(500).json({ error: `Setup failed with code ${code}` });
             }
-            mkStream.on("close", () => {
-              // SFTP the Dockerfile — no shell interpolation of its contents
-              const remoteDockerfile = `${workDir}/Dockerfile`;
-              const readStream = fs.createReadStream(localTmpPath);
-              const writeStream = sftp.createWriteStream(remoteDockerfile);
 
-              writeStream.on("close", () => {
-                fs.unlinkSync(localTmpPath);
+            if (fs.existsSync(localTmpPath)) fs.unlinkSync(localTmpPath);
 
-                // Now build and run — only safeContainerName and safePortFlag
-                // are interpolated; both are strictly validated above.
-                const buildAndRun = [
-                  `docker build -t ${safeContainerName} ${workDir}`,
-                  `docker rm -f ${safeContainerName} 2>/dev/null || true`,
-                  `docker run -d --name ${safeContainerName} ${safePortFlag} ${safeContainerName}`,
-                  `rm -rf ${workDir}`,
-                ].join(" && ")
+            const buildAndRun = [
+              `docker build -t ${safeContainerName} ${workDir}`,
+              `docker rm -f ${safeContainerName} 2>/dev/null || true`,
+              `docker run -d --name ${safeContainerName} ${safePortFlag} ${safeContainerName}`,
+              `rm -rf ${workDir}`
+            ].join(" && ");
 
-                // FIX: Use a static command string for conn.exec to satisfy CodeQL.
-                // We pipe the dynamic commands into bash's stdin instead.
-                conn.exec("sudo -S -p '' bash -s", (execErr, stream) => {
-                  if (execErr) {
-                    conn.end();
-                    return res.status(500).json({ error: execErr.message });
-                  }
-                  
-                  // 1. Send sudo password
-                  // 2. Send the build and run commands
-                  stream.write(server.password + "\n");
-                  stream.write(buildAndRun + "\n");
-                  stream.end();
-
-                  let output = "";
-                  let error = "";
-                  stream.on("data", (data) => (output += data.toString()));
-                  stream.stderr.on("data", (data) => (error += data.toString()));
-                  stream.on("close", (code) => {
-                    conn.end();
-                    res.json({ code, output, error });
-                  });
-                });
-              });
-
-              writeStream.on("error", (e: any) => {
+            console.log(`[DEPLOY] Executing build and run...`);
+            conn.exec("sudo -S -p '' bash -s", (execErr, execStream) => {
+              if (execErr) {
                 conn.end();
-                fs.unlinkSync(localTmpPath);
-                res.status(500).json({ error: e.message });
-              });
+                return res.status(500).json({ error: execErr.message });
+              }
+              execStream.write(server.password + "\n");
+              execStream.write(buildAndRun + "\n");
+              execStream.end();
 
-              readStream.pipe(writeStream);
+              let output = "";
+              let error = "";
+              execStream.on("data", (data) => {
+                output += data.toString();
+                console.log(`[OUT] ${data.toString().trim()}`);
+              });
+              execStream.stderr.on("data", (data) => {
+                error += data.toString();
+                console.error(`[ERR] ${data.toString().trim()}`);
+              });
+              execStream.on("close", (exitCode) => {
+                console.log(`[DEPLOY] Finished with code ${exitCode}`);
+                conn.end();
+                res.json({ code: exitCode, output, error });
+              });
             });
           });
         });
@@ -499,6 +498,136 @@ async function startServer() {
         password: server.password,
       });
   });
+  
+  // --- DevOps: Server Stats ---
+  app.get("/api/servers/:id/stats", (req, res) => {
+    const db = getDB();
+    const server = db.servers.find((s: any) => s.id === req.params.id);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+
+    const conn = new Client();
+    conn
+      .on("ready", () => {
+        // Get CPU idle (100 - idle = usage), Free Mem %, and Disk usage %
+        // 1. CPU: top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/"
+        // 2. RAM: free | grep Mem | awk '{print $3/$2 * 100.0}'
+        // 3. Disk: df -h / | awk 'NR==2{print $5}'
+        const statsCmd = `top -bn1 | grep "Cpu(s)" | sed "s/.*, *\\([0-9.]*\\)%* id.*/\\1/" && free | grep Mem | awk '{print $3/$2 * 100.0}' && df -h / | awk 'NR==2{print $5}'`;
+        conn.exec(statsCmd, (err, stream) => {
+          if (err) {
+            conn.end();
+            return res.status(500).json({ error: err.message });
+          }
+          let output = "";
+          stream.on("data", (data) => (output += data.toString()));
+          stream.on("close", () => {
+            conn.end();
+            const lines = output.trim().split("\n");
+            const cpuIdle = parseFloat(lines[0] || "100");
+            const memUsage = parseFloat(lines[1] || "0");
+            const diskUsage = (lines[2] || "0%").replace("%", "");
+            
+            res.json({
+              cpu: (100 - cpuIdle).toFixed(1),
+              memory: memUsage.toFixed(1),
+              disk: diskUsage,
+            });
+          });
+        });
+      })
+      .on("error", (err) => {
+        res.status(500).json({ error: "Stats failed: " + err.message });
+      })
+      .connect({
+        host: server.host,
+        port: server.port || 22,
+        username: server.username,
+        password: server.password,
+      });
+  });
+
+  // --- DevOps: List Containers ---
+  app.get("/api/servers/:id/containers", (req, res) => {
+    const db = getDB();
+    const server = db.servers.find((s: any) => s.id === req.params.id);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+
+    const conn = new Client();
+    conn
+      .on("ready", () => {
+        // Fetch running containers with detailed formatting
+        conn.exec("docker ps --format '{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}|{{.ID}}'", (err, stream) => {
+          if (err) {
+            conn.end();
+            return res.status(500).json({ error: err.message });
+          }
+          let output = "";
+          stream.on("data", (data) => (output += data.toString()));
+          stream.on("close", () => {
+            conn.end();
+            const containers = output.trim().split("\n").filter(Boolean).map(line => {
+              const [name, image, status, ports, id] = line.split("|");
+              return { name, image, status, ports, id };
+            });
+            res.json(containers);
+          });
+        });
+      })
+      .on("error", (err) => {
+        res.status(500).json({ error: "Connection failed: " + err.message });
+      })
+      .connect({
+        host: server.host,
+        port: server.port || 22,
+        username: server.username,
+        password: server.password,
+      });
+  });
+
+  // --- DevOps: Stop and Remove Container by Name ---
+  app.delete("/api/servers/:id/containers/:name", (req, res) => {
+    const db = getDB();
+    const server = db.servers.find((s: any) => s.id === req.params.id);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+
+    const containerName = req.params.name;
+    if (!/^[a-z0-9_-]{1,64}$/.test(containerName)) {
+      return res.status(400).json({ error: "Invalid container name" });
+    }
+
+    const conn = new Client();
+    conn
+      .on("ready", () => {
+        conn.exec("sudo -S -p '' bash -s", (err, stream) => {
+          if (err) {
+            conn.end();
+            return res.status(500).json({ error: err.message });
+          }
+          stream.write(server.password + "\n");
+          stream.write(`docker rm -f ${containerName}\n`);
+          stream.end();
+
+          let output = "";
+          let error = "";
+          stream.on("data", (data) => (output += data.toString()));
+          stream.stderr.on("data", (data) => (error += data.toString()));
+          stream.on("close", (code) => {
+            conn.end();
+            res.json({ code, output, error });
+          });
+        });
+      })
+      .on("error", (err) => {
+        res.status(500).json({ error: "Connection failed: " + err.message });
+      })
+      .connect({
+        host: server.host,
+        port: server.port || 22,
+        username: server.username,
+        password: server.password,
+      });
+  });
+
 
   // --- Cluster: Deploy Sample App ---
   app.post("/api/clusters/:id/deploy-sample", async (req, res) => {

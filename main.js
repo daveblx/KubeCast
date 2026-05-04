@@ -9,8 +9,10 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
 async function createWindow() {
   const mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: 1400,
+    height: 900,
+    minWidth: 1024,
+    minHeight: 768,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true
