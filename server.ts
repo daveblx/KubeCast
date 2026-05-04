@@ -22,7 +22,7 @@ const limiter = rateLimit({
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DB_PATH = path.join(process.cwd(), "db.json");
+const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), "db.json");
 
 // Ensure sync DB for simple state
 if (!fs.existsSync(DB_PATH)) {
@@ -404,7 +404,7 @@ async function startServer() {
                   `docker rm -f ${safeContainerName} 2>/dev/null || true`,
                   `docker run -d --name ${safeContainerName} ${safePortFlag} ${safeContainerName}`,
                   `rm -rf ${workDir}`,
-                ].join(" && ");
+                ].join(" && ")
 
                 // FIX: Use a static command string for conn.exec to satisfy CodeQL.
                 // We pipe the dynamic commands into bash's stdin instead.
@@ -1011,7 +1011,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    const distPath = process.env.DIST_PATH || path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
