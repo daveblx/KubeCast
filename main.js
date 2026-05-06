@@ -45,9 +45,11 @@ async function createWindow() {
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  app.quit();
+});
+
+process.on('exit', () => {
+  app.quit();
 });
 
 app.on('activate', () => {
