@@ -1992,12 +1992,30 @@ function AddModal({ onAdd, darkMode = false, onClose }: { onAdd: (s: any) => voi
     host: '',
     username: 'root',
     port: 22,
-    password: ''
+    password: '',
+    privateKey: ''
   });
+  const [authType, setAuthType] = useState<'password' | 'key'>('password');
+  const [keyFileName, setKeyFileName] = useState('');
+
+  const handleKeyFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setKeyFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      setFormData({ ...formData, privateKey: content });
+    };
+    reader.readAsText(file);
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onAdd(formData);
+    const submission = { ...formData };
+    if (authType === 'password') submission.privateKey = '';
+    else submission.password = '';
+    onAdd(submission);
   };
 
   return (
@@ -2062,15 +2080,64 @@ function AddModal({ onAdd, darkMode = false, onClose }: { onAdd: (s: any) => voi
             />
           </div>
 
-          <Input 
-            label="Root Password" 
-            type="password"
-            value={formData.password} 
-            darkMode={darkMode}
-            onChange={e => setFormData({...formData, password: e.target.value})} 
-            placeholder="Used only for authentication"
-            required
-          />
+          <div className="space-y-3">
+            <div className="flex p-1 bg-white/5 border border-white/5 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setAuthType('password')}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${authType === 'password' ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'}`}
+              >
+                Password
+              </button>
+              <button
+                type="button"
+                onClick={() => setAuthType('key')}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${authType === 'key' ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'}`}
+              >
+                SSH Key File
+              </button>
+            </div>
+
+            {authType === 'password' ? (
+              <Input 
+                label="Root Password" 
+                type="password"
+                value={formData.password} 
+                darkMode={darkMode}
+                onChange={e => setFormData({...formData, password: e.target.value})} 
+                placeholder="Password for auth"
+                required
+              />
+            ) : (
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase font-bold text-gray-400 tracking-wider ml-1">Private Key File</label>
+                <div className={`relative border-2 border-dashed rounded-xl p-4 transition-all ${
+                  formData.privateKey ? 'border-blue-500/50 bg-blue-500/5' : 'border-white/10 hover:border-white/20 bg-white/5'
+                }`}>
+                  <input
+                    type="file"
+                    onChange={handleKeyFileChange}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    required={!formData.privateKey}
+                  />
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2 rounded-lg ${formData.privateKey ? 'bg-blue-500 text-white' : 'bg-white/5 text-gray-500'}`}>
+                      <FileText className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1">
+                      <p className={`text-sm font-bold ${formData.privateKey ? 'text-white' : 'text-gray-400'}`}>
+                        {keyFileName || 'Select .pem or .key file'}
+                      </p>
+                      <p className="text-[10px] text-gray-500 font-medium">RSA, ED25519 supported</p>
+                    </div>
+                    {formData.privateKey && (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
 
           <div className="pt-4 flex gap-3">
             <button 

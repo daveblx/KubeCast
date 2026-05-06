@@ -74,6 +74,20 @@ function safePosixPath(userInput: string, username: string): string | null {
   return null;
 }
 
+function getServerSSHConfig(server: any) {
+  const config: any = {
+    host: server.host,
+    port: server.port || 22,
+    username: server.username,
+  };
+  if (server.privateKey) {
+    config.privateKey = server.privateKey;
+  } else {
+    config.password = server.password;
+  }
+  return config;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -88,13 +102,13 @@ async function startServer() {
   // Server Management API
   app.get("/api/servers", (req, res) => {
     const db = getDB();
-    // Strip passwords before sending to frontend
-    const sanitized = db.servers.map(({ password, ...rest }: any) => rest);
+    // Strip passwords and private keys before sending to frontend
+    const sanitized = db.servers.map(({ password, privateKey, ...rest }: any) => rest);
     res.json(sanitized);
   });
 
   app.post("/api/servers", (req, res) => {
-    const { name, host, username, port, password } = req.body;
+    const { name, host, username, port, password, privateKey } = req.body;
 
     if (!name || !host || !username) {
       return res.status(400).json({ error: "name, host, and username are required" });
@@ -108,13 +122,14 @@ async function startServer() {
       username,
       port: port || 22,
       password: password || "",
+      privateKey: privateKey || "",
       status: "offline",
       installed: { docker: false, k8s: false },
     };
     db.servers.push(newServer);
     saveDB(db);
-    // Return without password
-    const { password: _, ...sanitized } = newServer;
+    // Return without sensitive data
+    const { password: _, privateKey: __, ...sanitized } = newServer;
     res.json(sanitized);
   });
 
@@ -130,7 +145,7 @@ async function startServer() {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
     if (!server) return res.status(404).json({ error: "Server not found" });
-    const { password, ...sanitized } = server;
+    const { password, privateKey, ...sanitized } = server;
     res.json(sanitized);
   });
 
@@ -140,7 +155,7 @@ async function startServer() {
     if (idx === -1) return res.status(404).json({ error: "Server not found" });
     db.servers[idx] = { ...db.servers[idx], ...req.body };
     saveDB(db);
-    const { password, ...sanitized } = db.servers[idx];
+    const { password, privateKey, ...sanitized } = db.servers[idx];
     res.json(sanitized);
   });
 
@@ -201,12 +216,7 @@ async function startServer() {
       .on("error", (err: any) => {
         res.status(500).json({ error: "Connection failed: " + err.message });
       })
-      .connect({
-        host: server.host,
-        port: server.port || 22,
-        username: server.username,
-        password: server.password,
-      });
+      .connect(getServerSSHConfig(server));
   });
 
   // --- DevOps: Destructive Server Wipe ---
@@ -259,12 +269,7 @@ async function startServer() {
       .on("error", (err: any) => {
         res.status(500).json({ error: "Connection failed: " + err.message });
       })
-      .connect({
-        host: server.host,
-        port: server.port || 22,
-        username: server.username,
-        password: server.password,
-      });
+      .connect(getServerSSHConfig(server));
   });
 
   // --- DevOps: Remote Command Execution ---
@@ -323,12 +328,7 @@ async function startServer() {
       .on("error", (err) => {
         res.status(500).json({ error: "Connection failed: " + err.message });
       })
-      .connect({
-        host: server.host,
-        port: server.port || 22,
-        username: server.username,
-        password: server.password,
-      });
+      .connect(getServerSSHConfig(server));
   });
 
   // --- DevOps: Deploy Custom Dockerfile ---
@@ -445,12 +445,7 @@ async function startServer() {
         fs.unlinkSync(localTmpPath);
         res.status(500).json({ error: "Connection failed: " + err.message });
       })
-      .connect({
-        host: server.host,
-        port: server.port || 22,
-        username: server.username,
-        password: server.password,
-      });
+      .connect(getServerSSHConfig(server));
   });
 
   // --- DevOps: Stop and Remove Container ---
@@ -491,12 +486,7 @@ async function startServer() {
       .on("error", (err) => {
         res.status(500).json({ error: "Connection failed: " + err.message });
       })
-      .connect({
-        host: server.host,
-        port: server.port || 22,
-        username: server.username,
-        password: server.password,
-      });
+      .connect(getServerSSHConfig(server));
   });
   
   // --- DevOps: Server Stats ---
@@ -538,12 +528,7 @@ async function startServer() {
       .on("error", (err) => {
         res.status(500).json({ error: "Stats failed: " + err.message });
       })
-      .connect({
-        host: server.host,
-        port: server.port || 22,
-        username: server.username,
-        password: server.password,
-      });
+      .connect(getServerSSHConfig(server));
   });
 
   // --- DevOps: List Containers ---
@@ -576,12 +561,7 @@ async function startServer() {
       .on("error", (err) => {
         res.status(500).json({ error: "Connection failed: " + err.message });
       })
-      .connect({
-        host: server.host,
-        port: server.port || 22,
-        username: server.username,
-        password: server.password,
-      });
+      .connect(getServerSSHConfig(server));
   });
 
   // --- DevOps: Stop and Remove Container by Name ---
@@ -620,12 +600,7 @@ async function startServer() {
       .on("error", (err) => {
         res.status(500).json({ error: "Connection failed: " + err.message });
       })
-      .connect({
-        host: server.host,
-        port: server.port || 22,
-        username: server.username,
-        password: server.password,
-      });
+      .connect(getServerSSHConfig(server));
   });
 
 
@@ -667,12 +642,7 @@ async function startServer() {
             results.push({ serverId, error: "Connection failed: " + err.message });
             resolve(null);
           })
-          .connect({
-            host: server.host,
-            port: server.port || 22,
-            username: server.username,
-            password: server.password,
-          });
+          .connect(getServerSSHConfig(server));
       });
     }
     res.json({ results });
@@ -713,12 +683,7 @@ async function startServer() {
             results.push({ serverId, error: "Connection failed: " + err.message });
             resolve(null);
           })
-          .connect({
-            host: server.host,
-            port: server.port || 22,
-            username: server.username,
-            password: server.password,
-          });
+          .connect(getServerSSHConfig(server));
       });
     }
     res.json({ results });
@@ -826,12 +791,7 @@ async function startServer() {
       .on("error", (err) => {
         res.status(500).json({ error: "Connection failed: " + err.message });
       })
-      .connect({
-        host: server.host,
-        port: server.port || 22,
-        username: server.username,
-        password: server.password,
-      });
+      .connect(getServerSSHConfig(server));
   });
 
   const httpServer = app.listen(PORT, "0.0.0.0", () => {
@@ -966,12 +926,7 @@ async function startServer() {
           .on("error", (err) => {
             ws.send(JSON.stringify({ type: "error", data: err.message }));
           })
-          .connect({
-            host: server.host,
-            port: server.port || 22,
-            username: server.username,
-            password: server.password,
-          });
+          .connect(getServerSSHConfig(server));
       }
 
       if (data.type === "deploy") {

@@ -4,6 +4,8 @@ export interface Server {
   host: string;
   port: number;
   username: string;
+  password?: string;
+  privateKey?: string;
   status: 'online' | 'offline' | 'error';
   installed: {
     docker: boolean;
