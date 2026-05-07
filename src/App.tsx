@@ -4,12 +4,12 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Server as ServerIcon, 
-  Plus, 
-  Terminal as TerminalIcon, 
-  Shield, 
-  Activity, 
+import {
+  Server as ServerIcon,
+  Plus,
+  Terminal as TerminalIcon,
+  Shield,
+  Activity,
   Settings,
   Database,
   Globe,
@@ -29,7 +29,7 @@ import {
   Moon,
   Box
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, useDragControls } from 'motion/react';
 import { Server, Cluster, ClusterState } from './types';
 
 export default function App() {
@@ -42,7 +42,7 @@ export default function App() {
   const [activeTerminal, setActiveTerminal] = useState<Server | null>(null);
   const [autoDeployOnConnect, setAutoDeployOnConnect] = useState<null | 'full'>(null);
   const [autoRunOnConnect, setAutoRunOnConnect] = useState<
-    null | { kind: 'input'; label: string; command: string } | { kind: 'deploy'; label: string; scriptType: 'verify' }
+    null | { kind: 'input'; label: string; command: string } | { kind: 'deploy'; label: string; scriptType: 'verify' | 'template'; templateConfig?: any }
   >(null);
   const [isQuickDeployOpen, setIsQuickDeployOpen] = useState(false);
   const [quickDeployServerId, setQuickDeployServerId] = useState<string>('');
@@ -64,6 +64,8 @@ export default function App() {
   const [nuclearStep, setNuclearStep] = useState<0 | 1 | 2>(0);
   const [destroying, setDestroying] = useState<string | null>(null);
   const [deployDockerServer, setDeployDockerServer] = useState<Server | null>(null);
+  const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
+  const [templateConfig, setTemplateConfig] = useState<any>(null);
 
   useEffect(() => {
     fetchServers();
@@ -281,31 +283,31 @@ export default function App() {
         return (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-1 duration-300">
             <div className="grid grid-cols-4 gap-6">
-              <StatCard 
-                label="Active Nodes" 
-                value={servers.length.toString()} 
-                trend={servers.length > 0 ? "System healthy" : "Fleet offline"} 
-                trendColor={servers.length > 0 ? "text-green-600" : "text-gray-400"} 
+              <StatCard
+                label="Active Nodes"
+                value={servers.length.toString()}
+                trend={servers.length > 0 ? "System healthy" : "Fleet offline"}
+                trendColor={servers.length > 0 ? "text-green-600" : "text-gray-400"}
                 darkMode={darkMode}
               />
-              <StatCard 
-                label="Docker Hosts" 
-                value={servers.filter(s => s.installed.docker).length.toString()} 
-                trend={servers.length > 0 ? "Runtime active" : "No runtimes"} 
-                trendColor="text-gray-400" 
+              <StatCard
+                label="Docker Hosts"
+                value={servers.filter(s => s.installed.docker).length.toString()}
+                trend={servers.length > 0 ? "Runtime active" : "No runtimes"}
+                trendColor="text-gray-400"
                 darkMode={darkMode}
               />
-              <StatCard 
-                label="K8s Nodes" 
-                value={servers.filter(s => s.installed.k8s).length.toString()} 
-                percentage={servers.length > 0 ? (servers.filter(s => s.installed.k8s).length / servers.length) * 100 : 0} 
+              <StatCard
+                label="K8s Nodes"
+                value={servers.filter(s => s.installed.k8s).length.toString()}
+                percentage={servers.length > 0 ? (servers.filter(s => s.installed.k8s).length / servers.length) * 100 : 0}
                 darkMode={darkMode}
               />
-              <StatCard 
-                label="Resource Load" 
-                value={servers.length === 0 ? "0%" : (avgLoad == null ? "—" : `${avgLoad.toFixed(1)}%`)} 
-                percentage={avgLoad == null ? 0 : Math.max(0, Math.min(100, avgLoad))} 
-                variant="orange" 
+              <StatCard
+                label="Resource Load"
+                value={servers.length === 0 ? "0%" : (avgLoad == null ? "—" : `${avgLoad.toFixed(1)}%`)}
+                percentage={avgLoad == null ? 0 : Math.max(0, Math.min(100, avgLoad))}
+                variant="orange"
                 darkMode={darkMode}
               />
             </div>
@@ -322,7 +324,7 @@ export default function App() {
                   </div>
                   <h3 className="text-gray-900 font-semibold mb-1">Fleet Empty</h3>
                   <p className="text-sm text-gray-500 mb-6">Start by connecting your first host via SSH.</p>
-                  <button 
+                  <button
                     onClick={() => setIsAddModalOpen(true)}
                     className="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-blue-700 transition-all"
                   >
@@ -332,14 +334,14 @@ export default function App() {
               ) : (
                 <>
                   {sortedServers
-                    .filter(s => 
-                      s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                    .filter(s =>
+                      s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                       s.host.toLowerCase().includes(searchTerm.toLowerCase())
                     )
                     .map((server) => (
-                      <ServerCard 
-                        key={server.id} 
-                        server={server} 
+                      <ServerCard
+                        key={server.id}
+                        server={server}
                         darkMode={darkMode}
                         onDelete={deleteServer}
                         onTerminal={() => setActiveTerminal(server)}
@@ -380,11 +382,11 @@ export default function App() {
                       <tr key={s.id} className="hover:bg-gray-50/50">
                         <td className="px-6 py-4 font-bold text-gray-700">{s.name}</td>
                         <td className="px-6 py-4 text-gray-500 flex items-center gap-2">
-                           <div className="w-1.5 h-1.5 rounded-full bg-gray-300" /> Ready
+                          <div className="w-1.5 h-1.5 rounded-full bg-gray-300" /> Ready
                         </td>
                         <td className="px-6 py-4 font-mono text-gray-400">/var/log/ssh/{s.id}.log</td>
                         <td className="px-6 py-4 text-right">
-                          <button 
+                          <button
                             onClick={() => setActiveTerminal(s)}
                             className="bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg font-bold hover:bg-blue-600 hover:text-white transition-all"
                           >
@@ -403,40 +405,40 @@ export default function App() {
         return (
           <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in zoom-in-95 duration-500">
             <div className="text-center py-12">
-               <div className={`w-20 h-20 ${darkMode ? 'bg-blue-500/10' : 'bg-blue-50'} rounded-full flex items-center justify-center mx-auto mb-6`}>
-                 <Globe className="w-10 h-10 text-blue-500" />
-               </div>
-               <h2 className={`text-3xl font-bold tracking-tight mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Cluster Management</h2>
-               <p className={`${darkMode ? 'text-gray-400' : 'text-gray-500'} text-lg max-w-lg mx-auto`}>Group your servers into highly-available clusters and monitor distributed traffic.</p>
+              <div className={`w-20 h-20 ${darkMode ? 'bg-blue-500/10' : 'bg-blue-50'} rounded-full flex items-center justify-center mx-auto mb-6`}>
+                <Globe className="w-10 h-10 text-blue-500" />
+              </div>
+              <h2 className={`text-3xl font-bold tracking-tight mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Cluster Management</h2>
+              <p className={`${darkMode ? 'text-gray-400' : 'text-gray-500'} text-lg max-w-lg mx-auto`}>Group your servers into highly-available clusters and monitor distributed traffic.</p>
             </div>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-               <div
-                 onClick={() => setIsCreateClusterModalOpen(true)}
-                 className={`${darkMode ? 'bg-gray-900 border-white/5 hover:border-blue-500/50' : 'bg-white border-gray-200 hover:border-blue-500'} border rounded-2xl p-8 transition-all cursor-pointer group`}
-                 role="button"
-                 tabIndex={0}
-               >
-                  <div className={`w-12 h-12 ${darkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-50 text-gray-400'} rounded-xl flex items-center justify-center mb-6 group-hover:bg-blue-600 group-hover:text-white transition-all`}>
-                    <Plus className="w-6 h-6" />
-                  </div>
-                  <h4 className={`font-bold text-xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Create K3s Cluster</h4>
-                  <p className="text-sm text-gray-400 font-medium">Select nodes from Fleet and bootstrap K3s.</p>
-               </div>
-               <div
-                 onClick={() => setIsTrafficModalOpen(true)}
-                 className={`${darkMode ? 'bg-gray-900 border-white/5 hover:border-blue-500/50' : 'bg-white border-gray-200 hover:border-blue-500'} border rounded-2xl p-8 transition-all cursor-pointer group`}
-                 role="button"
-                 tabIndex={0}
-               >
-                  <div className={`w-12 h-12 ${darkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-50 text-gray-400'} rounded-xl flex items-center justify-center mb-6 group-hover:bg-blue-600 group-hover:text-white transition-all`}>
-                    <Activity className="w-6 h-6" />
-                  </div>
-                  <h4 className={`font-bold text-xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Traffic Overview</h4>
-                  <p className="text-sm text-gray-400 font-medium">Show RX/TX totals across your fleet.</p>
-               </div>
+              <div
+                onClick={() => setIsCreateClusterModalOpen(true)}
+                className={`${darkMode ? 'bg-gray-900 border-white/5 hover:border-blue-500/50' : 'bg-white border-gray-200 hover:border-blue-500'} border rounded-2xl p-8 transition-all cursor-pointer group`}
+                role="button"
+                tabIndex={0}
+              >
+                <div className={`w-12 h-12 ${darkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-50 text-gray-400'} rounded-xl flex items-center justify-center mb-6 group-hover:bg-blue-600 group-hover:text-white transition-all`}>
+                  <Plus className="w-6 h-6" />
+                </div>
+                <h4 className={`font-bold text-xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Create K3s Cluster</h4>
+                <p className="text-sm text-gray-400 font-medium">Select nodes from Fleet and bootstrap K3s.</p>
+              </div>
+              <div
+                onClick={() => setIsTrafficModalOpen(true)}
+                className={`${darkMode ? 'bg-gray-900 border-white/5 hover:border-blue-500/50' : 'bg-white border-gray-200 hover:border-blue-500'} border rounded-2xl p-8 transition-all cursor-pointer group`}
+                role="button"
+                tabIndex={0}
+              >
+                <div className={`w-12 h-12 ${darkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-50 text-gray-400'} rounded-xl flex items-center justify-center mb-6 group-hover:bg-blue-600 group-hover:text-white transition-all`}>
+                  <Activity className="w-6 h-6" />
+                </div>
+                <h4 className={`font-bold text-xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Traffic Overview</h4>
+                <p className="text-sm text-gray-400 font-medium">Show RX/TX totals across your fleet.</p>
+              </div>
             </div>
-            
+
             {clusters.length > 0 ? (
               <div className="mt-8">
                 <h3 className={`text-xl font-bold mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Your Clusters</h3>
@@ -493,7 +495,7 @@ export default function App() {
                 No clusters created yet. Click "Create K3s Cluster" to start.
               </div>
             )}
-            
+
             {deployResult && (
               <div className={`mt-4 p-4 border rounded-xl text-xs text-left font-mono whitespace-pre-wrap ${darkMode ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-green-50 border-green-200 text-green-900'}`}>
                 <div className="font-bold mb-1">Prod Simulation Deploy Result</div>
@@ -545,10 +547,10 @@ export default function App() {
                     <p className={`font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>SSH Port Default</p>
                     <p className="text-xs text-gray-500 font-medium">Global default port for host discovery.</p>
                   </div>
-                  <input 
-                    type="number" 
-                    defaultValue={22} 
-                    className={`w-20 border rounded-lg px-3 py-2 text-sm font-mono text-center outline-none transition-all ${darkMode ? 'bg-white/5 border-white/5 text-white focus:border-blue-500' : 'bg-gray-50 border-gray-100 focus:border-blue-500'}`} 
+                  <input
+                    type="number"
+                    defaultValue={22}
+                    className={`w-20 border rounded-lg px-3 py-2 text-sm font-mono text-center outline-none transition-all ${darkMode ? 'bg-white/5 border-white/5 text-white focus:border-blue-500' : 'bg-gray-50 border-gray-100 focus:border-blue-500'}`}
                   />
                 </div>
                 <div className="p-6 flex items-center justify-between">
@@ -556,8 +558,8 @@ export default function App() {
                     <p className={`font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Automatic Sync</p>
                     <p className="text-xs text-gray-500 font-medium">Update node status every 60 seconds.</p>
                   </div>
-                  <button 
-                    onClick={() => {}} 
+                  <button
+                    onClick={() => { }}
                     className={`w-12 h-6 rounded-full relative transition-colors ${darkMode ? 'bg-blue-600/50' : 'bg-blue-600'}`}
                   >
                     <div className="absolute right-1 top-1 w-4 h-4 bg-white rounded-full shadow-sm" />
@@ -605,14 +607,15 @@ export default function App() {
         );
       case 'apps':
         return (
-          <AppManagerView 
-            servers={servers} 
+          <AppManagerView
+            servers={servers}
             searchTerm={searchTerm}
             darkMode={darkMode}
             onOpenTerminal={(srv, auto) => {
               setActiveTerminal(srv);
               setAutoRunOnConnect(auto);
             }}
+            setIsTemplateModalOpen={setIsTemplateModalOpen}
           />
         );
       default:
@@ -625,10 +628,10 @@ export default function App() {
       <aside className={`w-64 ${darkMode ? 'bg-gray-900 border-white/5' : 'bg-white border-gray-200'} border-r flex flex-col shrink-0 transition-colors`}>
         <div className={`p-6 border-b ${darkMode ? 'border-white/5' : 'border-gray-100'} mb-2`}>
           <div className={`flex items-center gap-3 ${darkMode ? 'text-white' : 'text-slate-800'}`}>
-            <img 
-              src="/logo.png" 
-              className="w-10 h-10 rounded-lg object-contain shadow-sm" 
-              alt="KubeCast Logo" 
+            <img
+              src="/logo.png"
+              className="w-10 h-10 rounded-lg object-contain shadow-sm"
+              alt="KubeCast Logo"
             />
             <div onClick={() => setCurrentView('fleet')} className="cursor-pointer">
               <h1 className={`font-bold text-lg tracking-tight leading-none italic ${darkMode ? 'text-white' : 'text-slate-800'}`}>Kube<span className="text-blue-500">Cast</span></h1>
@@ -636,47 +639,47 @@ export default function App() {
             </div>
           </div>
         </div>
-        
+
         <nav className="flex-1 px-4 py-4 space-y-1">
-          <NavItem 
-            icon={<ServerIcon className="w-4 h-4" />} 
-            label="Fleet Overview" 
-            active={currentView === 'fleet'} 
+          <NavItem
+            icon={<ServerIcon className="w-4 h-4" />}
+            label="Fleet Overview"
+            active={currentView === 'fleet'}
             darkMode={darkMode}
             onClick={() => setCurrentView('fleet')}
           />
-          <NavItem 
-            icon={<TerminalIcon className="w-4 h-4" />} 
-            label="SSH Terminals" 
-            active={currentView === 'terminals'} 
+          <NavItem
+            icon={<TerminalIcon className="w-4 h-4" />}
+            label="SSH Terminals"
+            active={currentView === 'terminals'}
             darkMode={darkMode}
             onClick={() => setCurrentView('terminals')}
           />
-          <NavItem 
-            icon={<LayoutGrid className="w-4 h-4" />} 
-            label="App Manager" 
-            active={currentView === 'apps'} 
+          <NavItem
+            icon={<LayoutGrid className="w-4 h-4" />}
+            label="App Manager"
+            active={currentView === 'apps'}
             darkMode={darkMode}
             onClick={() => setCurrentView('apps')}
           />
-          <NavItem 
-            icon={<Globe className="w-4 h-4" />} 
-            label="Clusters" 
-            active={currentView === 'clusters'} 
+          <NavItem
+            icon={<Globe className="w-4 h-4" />}
+            label="Clusters"
+            active={currentView === 'clusters'}
             darkMode={darkMode}
             onClick={() => setCurrentView('clusters')}
           />
-          <NavItem 
-            icon={<Database className="w-4 h-4" />} 
-            label="Storage" 
-            active={currentView === 'storage'} 
+          <NavItem
+            icon={<Database className="w-4 h-4" />}
+            label="Storage"
+            active={currentView === 'storage'}
             darkMode={darkMode}
             onClick={() => setCurrentView('storage')}
           />
-          <NavItem 
-            icon={<Settings className="w-4 h-4" />} 
-            label="Settings" 
-            active={currentView === 'settings'} 
+          <NavItem
+            icon={<Settings className="w-4 h-4" />}
+            label="Settings"
+            active={currentView === 'settings'}
             darkMode={darkMode}
             onClick={() => setCurrentView('settings')}
           />
@@ -696,7 +699,7 @@ export default function App() {
         <header className={`h-16 shrink-0 border-b ${darkMode ? 'bg-gray-900/50 border-white/5 backdrop-blur-md' : 'bg-white border-gray-100'} px-8 flex items-center justify-between sticky top-0 z-10 transition-colors`}>
           <div className="flex-1 max-w-md relative group">
             <Search className={`absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 ${darkMode ? 'text-gray-500' : 'text-gray-400'} group-focus-within:text-blue-500 transition-colors`} />
-            <input 
+            <input
               type="text"
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
@@ -706,17 +709,16 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            <button 
+            <button
               onClick={() => setDarkMode(!darkMode)}
               className={`p-2.5 rounded-xl border transition-all ${darkMode ? 'bg-white/5 border-white/10 text-amber-400 hover:bg-white/10' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}
             >
               {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </button>
-            <button 
+            <button
               onClick={() => setIsAddModalOpen(true)}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all shadow-lg ${
-                darkMode ? 'bg-white/10 border-white/10 text-white hover:bg-white/20' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
-              }`}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all shadow-lg ${darkMode ? 'bg-white/10 border-white/10 text-white hover:bg-white/20' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                }`}
             >
               <Plus className="w-4 h-4" />
               Add Host
@@ -733,11 +735,10 @@ export default function App() {
                 setIsQuickDeployOpen(true);
               }}
               disabled={servers.length === 0 || maintenanceMode}
-              className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all shadow-lg ${
-                servers.length === 0 || maintenanceMode
+              className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all shadow-lg ${servers.length === 0 || maintenanceMode
                   ? 'bg-gray-200 text-gray-400 cursor-not-allowed shadow-none'
                   : 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-600/20'
-              }`}
+                }`}
             >
               Quick Deploy
             </button>
@@ -832,7 +833,7 @@ export default function App() {
 
       <AnimatePresence>
         {nuclearTarget && nuclearStep === 1 && (
-          <NuclearWarningModal 
+          <NuclearWarningModal
             server={nuclearTarget}
             darkMode={darkMode}
             onConfirm={() => setNuclearStep(2)}
@@ -843,7 +844,7 @@ export default function App() {
           />
         )}
         {nuclearTarget && nuclearStep === 2 && (
-          <NuclearConfirmationModal 
+          <NuclearConfirmationModal
             server={nuclearTarget}
             isDestroying={destroying === nuclearTarget.id}
             darkMode={darkMode}
@@ -858,13 +859,13 @@ export default function App() {
 
       <AnimatePresence>
         {isProdSimulationOpen && simulationCluster && (
-          <ProdSimulationOverlay 
-            cluster={simulationCluster} 
+          <ProdSimulationOverlay
+            cluster={simulationCluster}
             darkMode={darkMode}
             onClose={() => {
               setIsProdSimulationOpen(false);
               setSimulationCluster(null);
-            }} 
+            }}
           />
         )}
       </AnimatePresence>
@@ -934,19 +935,39 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {isTemplateModalOpen && (
+          <DeployTemplateModal
+            servers={servers}
+            darkMode={darkMode}
+            onClose={() => setIsTemplateModalOpen(false)}
+            onStart={(srv, config) => {
+              setIsTemplateModalOpen(false);
+              if (maintenanceMode) return;
+              setAutoRunOnConnect({
+                kind: 'deploy',
+                label: 'VPS Template',
+                templateConfig: config,
+                scriptType: 'template'
+              } as any);
+              setActiveTerminal(srv);
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
 function NavItem({ icon, label, active = false, darkMode = false, onClick }: { icon: React.ReactNode, label: string, active?: boolean, darkMode?: boolean, onClick?: () => void }) {
   return (
-    <button 
+    <button
       onClick={onClick}
-      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-        active 
-          ? (darkMode ? 'bg-blue-600/20 text-blue-400 shadow-lg shadow-blue-900/20' : 'bg-blue-50 text-blue-700 shadow-sm shadow-blue-100/50') 
+      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all ${active
+          ? (darkMode ? 'bg-blue-600/20 text-blue-400 shadow-lg shadow-blue-900/20' : 'bg-blue-50 text-blue-700 shadow-sm shadow-blue-100/50')
           : (darkMode ? 'text-gray-400 hover:bg-white/5' : 'text-gray-500 hover:bg-gray-100')
-      }`}
+        }`}
     >
       {icon}
       {label}
@@ -1015,7 +1036,7 @@ function ServerCard({
   };
 
   return (
-    <motion.div 
+    <motion.div
       layout
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
@@ -1023,11 +1044,10 @@ function ServerCard({
     >
       <div className="flex items-start justify-between mb-6">
         <div className="flex items-center gap-4">
-          <div className={`w-10 h-10 rounded-xl flex items-center justify-center border shadow-sm ${
-            server.status === 'online' || telemetry 
-            ? (darkMode ? 'bg-blue-600/20 border-blue-500/20 text-blue-400' : 'bg-blue-50 border-blue-100 text-blue-600') 
-            : (darkMode ? 'bg-white/5 border-white/5 text-gray-600' : 'bg-gray-50 border-gray-100 text-gray-400')
-          }`}>
+          <div className={`w-10 h-10 rounded-xl flex items-center justify-center border shadow-sm ${server.status === 'online' || telemetry
+              ? (darkMode ? 'bg-blue-600/20 border-blue-500/20 text-blue-400' : 'bg-blue-50 border-blue-100 text-blue-600')
+              : (darkMode ? 'bg-white/5 border-white/5 text-gray-600' : 'bg-gray-50 border-gray-100 text-gray-400')
+            }`}>
             {fetching ? <Loader2 className="w-5 h-5 animate-spin" /> : <ServerIcon className="w-5 h-5" />}
           </div>
           <div>
@@ -1036,21 +1056,21 @@ function ServerCard({
           </div>
         </div>
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button 
+          <button
             onClick={fetchTelemetry}
             className={`p-2 rounded-lg transition-all ${darkMode ? 'text-gray-400 hover:text-blue-400 hover:bg-white/5' : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50'}`}
             title="Refresh Heartbeat"
           >
             <Activity className="w-4 h-4" />
           </button>
-          <button 
+          <button
             onClick={onTerminal}
             className={`p-2 rounded-lg transition-all ${darkMode ? 'text-gray-400 hover:text-blue-400 hover:bg-white/5' : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50'}`}
             title="Terminal"
           >
             <TerminalIcon className="w-4 h-4" />
           </button>
-          <button 
+          <button
             onClick={() => onDelete(server.id)}
             className={`p-2 rounded-lg transition-all ${darkMode ? 'text-gray-400 hover:text-red-400 hover:bg-white/5' : 'text-gray-400 hover:text-red-500 hover:bg-red-50'}`}
             title="Remove"
@@ -1138,57 +1158,59 @@ function ServerCard({
       </div>
 
       <div className="flex items-center gap-2">
-         <button
-           onClick={onTerminal}
-           className="flex-1 flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest h-10 rounded-lg bg-gray-50 border border-gray-100 hover:bg-blue-600 hover:text-white hover:border-blue-600 transition-all text-gray-500 shadow-sm group"
-         >
-           <TerminalIcon className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
-           Access Node
-         </button>
-         <button
-           onClick={async () => {
-             setProdTest({ running: true });
-             try {
-               const res = await fetch(`/api/servers/${server.id}/exec`, {
-                 method: 'POST',
-                 headers: { 'Content-Type': 'application/json' },
-                 body: JSON.stringify({ command: [
-                   'echo "=== PROD TEST ==="',
-                   'uname -a',
-                   'echo "Node.js:"; node -v || echo "Not installed"',
-                   'echo "Docker:"; docker --version || echo "Not installed"',
-                   'echo "K3s:"; k3s --version 2>/dev/null || echo "Not installed"',
-                   'echo "Disk usage:"; df -h / | tail -1',
-                   'echo "CPU info:"; nproc || echo "nproc not available"',
-                   'echo "Memory:"; free -h || cat /proc/meminfo | grep Mem',
-                 ].join(' && ') })
-               });
-               const data = await res.json();
-               setProdTest({ running: false, result: data });
-             } catch (e) {
-               setProdTest({ running: false, result: { code: -1, output: '', error: String(e) } });
-             }
-           }}
-           disabled={prodTest?.running}
-           className={`flex-1 flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest h-10 rounded-lg border transition-all shadow-sm ${prodTest?.running ? 'bg-emerald-50 border-emerald-100 text-emerald-600 cursor-wait' : 'bg-gray-50 border-gray-100 text-gray-500 hover:bg-emerald-600 hover:text-white hover:border-emerald-600'}`}
-         >
-           {prodTest?.running ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Activity className="w-3.5 h-3.5" />}
-           {prodTest?.running ? 'Testing' : 'Prod Test'}
-         </button>
-         <button
-           onClick={onSettings}
-           className="w-10 h-10 flex items-center justify-center bg-gray-50 border border-gray-100 rounded-lg hover:border-gray-300 transition-colors"
-           title="Server Settings"
-         >
-            <Settings className="w-4 h-4 text-gray-400" />
-         </button>
-         <button
-            onClick={onNuke}
-            className="w-10 h-10 flex items-center justify-center bg-red-50 border border-red-100 rounded-lg hover:bg-red-100 transition-colors"
-            title="Nuke Server"
-          >
-             <Shield className="w-4 h-4 text-red-500" />
-          </button>
+        <button
+          onClick={onTerminal}
+          className="flex-1 flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest h-10 rounded-lg bg-gray-50 border border-gray-100 hover:bg-blue-600 hover:text-white hover:border-blue-600 transition-all text-gray-500 shadow-sm group"
+        >
+          <TerminalIcon className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+          Access Node
+        </button>
+        <button
+          onClick={async () => {
+            setProdTest({ running: true });
+            try {
+              const res = await fetch(`/api/servers/${server.id}/exec`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  command: [
+                    'echo "=== PROD TEST ==="',
+                    'uname -a',
+                    'echo "Node.js:"; node -v || echo "Not installed"',
+                    'echo "Docker:"; docker --version || echo "Not installed"',
+                    'echo "K3s:"; k3s --version 2>/dev/null || echo "Not installed"',
+                    'echo "Disk usage:"; df -h / | tail -1',
+                    'echo "CPU info:"; nproc || echo "nproc not available"',
+                    'echo "Memory:"; free -h || cat /proc/meminfo | grep Mem',
+                  ].join(' && ')
+                })
+              });
+              const data = await res.json();
+              setProdTest({ running: false, result: data });
+            } catch (e) {
+              setProdTest({ running: false, result: { code: -1, output: '', error: String(e) } });
+            }
+          }}
+          disabled={prodTest?.running}
+          className={`flex-1 flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest h-10 rounded-lg border transition-all shadow-sm ${prodTest?.running ? 'bg-emerald-50 border-emerald-100 text-emerald-600 cursor-wait' : 'bg-gray-50 border-gray-100 text-gray-500 hover:bg-emerald-600 hover:text-white hover:border-emerald-600'}`}
+        >
+          {prodTest?.running ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Activity className="w-3.5 h-3.5" />}
+          {prodTest?.running ? 'Testing' : 'Prod Test'}
+        </button>
+        <button
+          onClick={onSettings}
+          className="w-10 h-10 flex items-center justify-center bg-gray-50 border border-gray-100 rounded-lg hover:border-gray-300 transition-colors"
+          title="Server Settings"
+        >
+          <Settings className="w-4 h-4 text-gray-400" />
+        </button>
+        <button
+          onClick={onNuke}
+          className="w-10 h-10 flex items-center justify-center bg-red-50 border border-red-100 rounded-lg hover:bg-red-100 transition-colors"
+          title="Nuke Server"
+        >
+          <Shield className="w-4 h-4 text-red-500" />
+        </button>
       </div>
       {prodTest?.result && (
         <div className="mt-3 p-4 rounded-xl border border-emerald-200 bg-emerald-50/50 text-xs shadow-sm overflow-hidden">
@@ -1197,14 +1219,14 @@ function ServerCard({
               <Activity className="w-3 h-3" />
               Prod Test Result
             </div>
-            <button 
+            <button
               onClick={() => setProdTest(null)}
               className="text-[10px] font-bold text-emerald-600 hover:text-emerald-800 uppercase tracking-tight"
             >
               Hide
             </button>
           </div>
-          
+
           <div className="flex items-center gap-2 mb-3 px-2 py-1 bg-white/50 border border-emerald-100 rounded-lg w-fit">
             <span className="text-emerald-600 font-bold">Status:</span>
             <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${prodTest.result.code === 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
@@ -1271,14 +1293,15 @@ function TerminalOverlay({
 }: {
   server: Server;
   autoDeploy: null | 'full';
-  autoRun: null | { kind: 'input'; label: string; command: string } | { kind: 'deploy'; label: string; scriptType: 'verify' };
+  autoRun: null | { kind: 'input'; label: string; command: string } | { kind: 'deploy'; label: string; scriptType: 'verify' | 'template'; templateConfig?: any };
   onClose: () => void;
 }) {
-  const [size, setSize] = useState({ 
-    width: Math.min(window.innerWidth - 64, 1000), 
-    height: Math.min(window.innerHeight - 64, 700) 
+  const [size, setSize] = useState({
+    width: Math.min(window.innerWidth - 64, 1000),
+    height: Math.min(window.innerHeight - 64, 700)
   });
   const [isResizing, setIsResizing] = useState(false);
+  const dragControls = useDragControls();
 
   useEffect(() => {
     const handleResize = () => {
@@ -1301,10 +1324,10 @@ function TerminalOverlay({
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws.current = new WebSocket(`${protocol}//${window.location.host}/ws/ssh`);
-    
+
     ws.current.onopen = () => {
-      ws.current?.send(JSON.stringify({ 
-        type: 'connect', 
+      ws.current?.send(JSON.stringify({
+        type: 'connect',
         serverId: server.id
       }));
     };
@@ -1326,7 +1349,11 @@ function TerminalOverlay({
           if (autoRun.kind === 'input') {
             ws.current?.send(JSON.stringify({ type: 'input', data: autoRun.command + '\n' }));
           } else {
-            ws.current?.send(JSON.stringify({ type: 'deploy', scriptType: autoRun.scriptType }));
+            ws.current?.send(JSON.stringify({
+              type: 'deploy',
+              scriptType: autoRun.scriptType,
+              ...(autoRun.scriptType === 'template' && (autoRun as any).templateConfig ? { templateConfig: (autoRun as any).templateConfig } : {})
+            }));
           }
         }
       } else if (data.type === 'error') {
@@ -1383,16 +1410,21 @@ function TerminalOverlay({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-gray-900/40 backdrop-blur-sm">
-      <motion.div 
+      <motion.div
         drag
         dragMomentum={false}
+        dragControls={dragControls}
+        dragListener={false}
         initial={{ scale: 0.95, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.95, opacity: 0 }}
         style={{ width: size.width, height: size.height }}
         className="glass-terminal border border-white/10 rounded-2xl flex flex-col shadow-2xl overflow-hidden relative"
       >
-        <div className="h-14 border-b border-white/5 flex items-center justify-between px-6 bg-white/5 cursor-move">
+        <div
+          onPointerDown={(e) => dragControls.start(e)}
+          className="h-14 border-b border-white/5 flex items-center justify-between px-6 bg-white/5 cursor-move"
+        >
           <div className="flex items-center gap-4">
             <span className="text-[11px] font-mono text-gray-400">
               {server.username}@<span className="text-blue-400">{server.host}</span> &mdash; <span className="text-gray-100">{status}</span>
@@ -1400,59 +1432,59 @@ function TerminalOverlay({
           </div>
 
           <div className="flex items-center gap-4">
-             <div className="flex gap-2">
-                <button 
-                  onClick={() => handleDeploy('docker')}
-                  className="text-[10px] bg-slate-800 text-slate-100 border border-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-700 transition-colors uppercase font-bold shadow-sm"
-                >
-                  Install Docker
-                </button>
-                <button 
-                  onClick={() => handleDeploy('k3s')}
-                  className="text-[10px] bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-500 transition-colors uppercase font-bold shadow-sm"
-                >
-                  Bootstrap K3s
-                </button>
-                <button
-                  onClick={() => handleDeploy('full')}
-                  className="text-[10px] bg-sky-500 text-white px-3 py-1.5 rounded-lg hover:bg-sky-400 transition-colors uppercase font-bold shadow-sm"
-                >
-                  Full Stack
-                </button>
-                <button
-                  onClick={() => handleDeploy('verify')}
-                  className="text-[10px] bg-emerald-600 text-white px-3 py-1.5 rounded-lg hover:bg-emerald-500 transition-colors uppercase font-bold shadow-sm"
-                >
-                  Verify
-                </button>
-             </div>
-             <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors ml-2">
-               <X className="w-5 h-5" />
-             </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => handleDeploy('docker')}
+                className="text-[10px] bg-slate-800 text-slate-100 border border-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-700 transition-colors uppercase font-bold shadow-sm"
+              >
+                Install Docker
+              </button>
+              <button
+                onClick={() => handleDeploy('k3s')}
+                className="text-[10px] bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-500 transition-colors uppercase font-bold shadow-sm"
+              >
+                Bootstrap K3s
+              </button>
+              <button
+                onClick={() => handleDeploy('full')}
+                className="text-[10px] bg-sky-500 text-white px-3 py-1.5 rounded-lg hover:bg-sky-400 transition-colors uppercase font-bold shadow-sm"
+              >
+                Full Stack
+              </button>
+              <button
+                onClick={() => handleDeploy('verify')}
+                className="text-[10px] bg-emerald-600 text-white px-3 py-1.5 rounded-lg hover:bg-emerald-500 transition-colors uppercase font-bold shadow-sm"
+              >
+                Verify
+              </button>
+            </div>
+            <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors ml-2">
+              <X className="w-5 h-5" />
+            </button>
           </div>
         </div>
 
-        <div 
+        <div
           ref={scrollRef}
           className="flex-1 p-6 font-mono text-[13px] overflow-y-auto terminal-scrollbar whitespace-pre-wrap leading-relaxed selection:bg-blue-500/40 text-gray-300"
         >
           {logs.map((log, i) => (
-            <div key={i} className="mb-0.5">{log}</div>
+            <div key={i} dangerouslySetInnerHTML={{ __html: log.replace(/ /g, '&nbsp;') }} />
           ))}
           <form onSubmit={handleSend} className="inline-flex items-center w-full mt-2">
-             <span className="text-blue-400 mr-2 font-bold">❯</span>
-             <input 
-               autoFocus
-               value={input}
-               onChange={(e) => setInput(e.target.value)}
-               className="bg-transparent border-none outline-none flex-1 text-gray-100"
-               placeholder="Execute command..."
-             />
+            <span className="text-blue-400 mr-2 font-bold">❯</span>
+            <input
+              autoFocus
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              className="bg-transparent border-none outline-none flex-1 text-gray-100"
+              placeholder="Execute command..."
+            />
           </form>
         </div>
 
         {/* Resize Handle */}
-        <div 
+        <div
           onMouseDown={startResizing}
           className="absolute bottom-0 right-0 w-6 h-6 cursor-nwse-resize flex items-center justify-center group"
         >
@@ -1463,16 +1495,18 @@ function TerminalOverlay({
   );
 }
 
-function AppManagerView({ 
-  servers, 
+function AppManagerView({
+  servers,
   searchTerm,
   darkMode = false,
-  onOpenTerminal 
-}: { 
-  servers: Server[], 
+  onOpenTerminal,
+  setIsTemplateModalOpen
+}: {
+  servers: Server[],
   searchTerm: string,
   darkMode?: boolean,
-  onOpenTerminal: (server: Server, autoRun: any) => void 
+  onOpenTerminal: (server: Server, autoRun: any) => void,
+  setIsTemplateModalOpen: (open: boolean) => void
 }) {
   const [apps, setApps] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1521,8 +1555,8 @@ function AppManagerView({
   const handleOpenTerminal = (serverId: string, containerName: string, mode: 'shell' | 'logs') => {
     const server = servers.find(s => s.id === serverId);
     if (!server) return;
-    
-    onOpenTerminal(server, mode === 'shell' 
+
+    onOpenTerminal(server, mode === 'shell'
       ? { kind: 'input', label: `Exec: ${containerName}`, command: `sudo docker exec -it ${containerName} bash || sudo docker exec -it ${containerName} sh` }
       : { kind: 'input', label: `Logs: ${containerName}`, command: `sudo docker logs -f ${containerName}` }
     );
@@ -1535,19 +1569,29 @@ function AppManagerView({
           <h2 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>App Manager</h2>
           <p className="text-slate-500 font-medium mt-1">Fleet-wide container orchestration and monitoring</p>
         </div>
-        <button 
-          onClick={fetchApps}
-          className={`p-3 border rounded-2xl transition-all shadow-sm group ${darkMode ? 'bg-white/5 border-white/5 hover:bg-white/10' : 'bg-white border-slate-200 hover:bg-slate-50'}`}
-          title="Refresh fleet"
-        >
-          <RefreshCw className={`w-5 h-5 text-slate-400 group-hover:text-blue-600 transition-colors ${loading ? 'animate-spin' : ''}`} />
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setIsTemplateModalOpen(true)}
+            className={`flex items-center gap-2 px-6 py-3 rounded-2xl text-sm font-bold transition-all shadow-lg ${darkMode ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-600/20' : 'bg-blue-600 text-white hover:bg-blue-700'
+              }`}
+          >
+            <LayoutGrid className="w-4 h-4" />
+            Deploy VPS Template
+          </button>
+          <button
+            onClick={fetchApps}
+            className={`p-3 border rounded-2xl transition-all shadow-sm group ${darkMode ? 'bg-white/5 border-white/5 hover:bg-white/10' : 'bg-white border-slate-200 hover:bg-slate-50'}`}
+            title="Refresh fleet"
+          >
+            <RefreshCw className={`w-5 h-5 text-slate-400 group-hover:text-blue-600 transition-colors ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
         {apps
-          .filter(app => 
-            app.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+          .filter(app =>
+            app.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
             app.image.toLowerCase().includes(searchTerm.toLowerCase()) ||
             app.serverName.toLowerCase().includes(searchTerm.toLowerCase())
           )
@@ -1561,96 +1605,95 @@ function AppManagerView({
           </div>
         ) : (
           apps
-            .filter(app => 
-              app.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+            .filter(app =>
+              app.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
               app.image.toLowerCase().includes(searchTerm.toLowerCase()) ||
               app.serverName.toLowerCase().includes(searchTerm.toLowerCase())
             )
             .map((app, i) => (
-            <motion.div 
-              key={`${app.serverId}-${app.name}`}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.05 }}
-              className={`${darkMode ? 'bg-gray-900 border-white/5' : 'bg-white border-slate-200'} border rounded-[2.5rem] p-8 shadow-sm hover:shadow-xl hover:border-blue-500 transition-all group relative overflow-hidden`}
-            >
-              <div className="absolute top-0 right-0 p-8 opacity-0 group-hover:opacity-100 transition-opacity">
-                <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-              </div>
-
-              <div className="flex items-center gap-4 mb-8">
-                <div className={`w-14 h-14 rounded-2xl flex items-center justify-center border-2 transition-colors ${
-                  app.status.includes('Up') 
-                  ? (darkMode ? 'bg-emerald-500/20 border-emerald-500/20 text-emerald-400' : 'bg-emerald-50 border-emerald-100 text-emerald-600') 
-                  : (darkMode ? 'bg-white/5 border-white/5 text-gray-600' : 'bg-slate-50 border-slate-100 text-slate-400')
-                }`}>
-                  <Box className="w-7 h-7" />
+              <motion.div
+                key={`${app.serverId}-${app.name}`}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.05 }}
+                className={`${darkMode ? 'bg-gray-900 border-white/5' : 'bg-white border-slate-200'} border rounded-[2.5rem] p-8 shadow-sm hover:shadow-xl hover:border-blue-500 transition-all group relative overflow-hidden`}
+              >
+                <div className="absolute top-0 right-0 p-8 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
                 </div>
-                <div>
-                  <h3 className={`text-xl font-bold truncate max-w-[180px] ${darkMode ? 'text-white' : 'text-slate-900'}`}>{app.name}</h3>
-                  <div className="flex items-center gap-1.5 text-slate-400 text-xs font-bold uppercase tracking-widest mt-1">
-                    <ServerIcon className="w-3 h-3" />
-                    {app.serverName}
+
+                <div className="flex items-center gap-4 mb-8">
+                  <div className={`w-14 h-14 rounded-2xl flex items-center justify-center border-2 transition-colors ${app.status.includes('Up')
+                      ? (darkMode ? 'bg-emerald-500/20 border-emerald-500/20 text-emerald-400' : 'bg-emerald-50 border-emerald-100 text-emerald-600')
+                      : (darkMode ? 'bg-white/5 border-white/5 text-gray-600' : 'bg-slate-50 border-slate-100 text-slate-400')
+                    }`}>
+                    <Box className="w-7 h-7" />
+                  </div>
+                  <div>
+                    <h3 className={`text-xl font-bold truncate max-w-[180px] ${darkMode ? 'text-white' : 'text-slate-900'}`}>{app.name}</h3>
+                    <div className="flex items-center gap-1.5 text-slate-400 text-xs font-bold uppercase tracking-widest mt-1">
+                      <ServerIcon className="w-3 h-3" />
+                      {app.serverName}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="space-y-5 mb-8">
-                <div className={`${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50/50 border-slate-100'} rounded-2xl p-4 border`}>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Image Bundle</p>
-                  <p className={`text-sm font-mono font-medium ${darkMode ? 'text-gray-300' : 'text-slate-700'} truncate`}>{app.image}</p>
-                </div>
-                
-                <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-5 mb-8">
                   <div className={`${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50/50 border-slate-100'} rounded-2xl p-4 border`}>
-                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Status</p>
-                    <p className={`text-sm font-bold ${app.status.includes('Up') ? 'text-emerald-500' : 'text-amber-500'}`}>{app.status}</p>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Image Bundle</p>
+                    <p className={`text-sm font-mono font-medium ${darkMode ? 'text-gray-300' : 'text-slate-700'} truncate`}>{app.image}</p>
                   </div>
-                  <div className={`${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50/50 border-slate-100'} rounded-2xl p-4 border`}>
-                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Endpoint</p>
-                    <p className={`text-sm font-mono font-bold ${darkMode ? 'text-gray-300' : 'text-slate-700'}`}>{app.ports || 'internal'}</p>
-                  </div>
-                </div>
-              </div>
 
-              <div className="flex items-center gap-2">
-                {app.ports && app.ports.includes('->') && (
-                  <a 
-                    href={`http://${app.serverHost}:${app.ports.split('->')[0].split(':')[1] || app.ports.split('->')[0]}`} 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20"
-                  >
-                    <ExternalLink className="w-4 h-4" /> Open App
-                  </a>
-                )}
-                
-                <div className="flex gap-2">
-                  <button 
-                    onClick={() => handleOpenTerminal(app.serverId, app.name, 'shell')}
-                    className={`p-3 ${darkMode ? 'text-gray-400 hover:text-blue-400 hover:bg-white/5 border-white/5' : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50 border-slate-100'} border rounded-xl transition-all`}
-                    title="Container Shell"
-                  >
-                    <TerminalIcon className="w-5 h-5" />
-                  </button>
-                  <button 
-                    onClick={() => handleOpenTerminal(app.serverId, app.name, 'logs')}
-                    className={`p-3 ${darkMode ? 'text-gray-400 hover:text-indigo-400 hover:bg-white/5 border-white/5' : 'text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 border-slate-100'} border rounded-xl transition-all`}
-                    title="Container Logs"
-                  >
-                    <FileText className="w-5 h-5" />
-                  </button>
-                  <button 
-                    onClick={() => handleDelete(app.serverId, app.name)}
-                    className={`p-3 ${darkMode ? 'text-gray-500 hover:text-red-400 hover:bg-white/5 border-white/5' : 'text-slate-400 hover:text-red-600 hover:bg-red-50 border-slate-100'} border rounded-xl transition-all`}
-                    title="Remove Container"
-                  >
-                    <Trash2 className="w-5 h-5" />
-                  </button>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className={`${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50/50 border-slate-100'} rounded-2xl p-4 border`}>
+                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Status</p>
+                      <p className={`text-sm font-bold ${app.status.includes('Up') ? 'text-emerald-500' : 'text-amber-500'}`}>{app.status}</p>
+                    </div>
+                    <div className={`${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50/50 border-slate-100'} rounded-2xl p-4 border`}>
+                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Endpoint</p>
+                      <p className={`text-sm font-mono font-bold ${darkMode ? 'text-gray-300' : 'text-slate-700'}`}>{app.ports || 'internal'}</p>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </motion.div>
-          ))
+
+                <div className="flex items-center gap-2">
+                  {app.ports && app.ports.includes('->') && (
+                    <a
+                      href={`http://${app.serverHost}:${app.ports.split('->')[0].split(':')[1] || app.ports.split('->')[0]}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20"
+                    >
+                      <ExternalLink className="w-4 h-4" /> Open App
+                    </a>
+                  )}
+
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleOpenTerminal(app.serverId, app.name, 'shell')}
+                      className={`p-3 ${darkMode ? 'text-gray-400 hover:text-blue-400 hover:bg-white/5 border-white/5' : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50 border-slate-100'} border rounded-xl transition-all`}
+                      title="Container Shell"
+                    >
+                      <TerminalIcon className="w-5 h-5" />
+                    </button>
+                    <button
+                      onClick={() => handleOpenTerminal(app.serverId, app.name, 'logs')}
+                      className={`p-3 ${darkMode ? 'text-gray-400 hover:text-indigo-400 hover:bg-white/5 border-white/5' : 'text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 border-slate-100'} border rounded-xl transition-all`}
+                      title="Container Logs"
+                    >
+                      <FileText className="w-5 h-5" />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(app.serverId, app.name)}
+                      className={`p-3 ${darkMode ? 'text-gray-500 hover:text-red-400 hover:bg-white/5 border-white/5' : 'text-slate-400 hover:text-red-600 hover:bg-red-50 border-slate-100'} border rounded-xl transition-all`}
+                      title="Remove Container"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            ))
         )}
       </div>
     </div>
@@ -1814,12 +1857,12 @@ function InfoModal({
   );
 }
 
-function TrafficModal({ 
-  history, 
+function TrafficModal({
+  history,
   onClose,
   darkMode = false
-}: { 
-  history: Record<string, Array<{ ts: number; rxMb?: number; txMb?: number }>>; 
+}: {
+  history: Record<string, Array<{ ts: number; rxMb?: number; txMb?: number }>>;
   onClose: () => void;
   darkMode?: boolean;
 }) {
@@ -1834,7 +1877,7 @@ function TrafficModal({
   }, 0);
 
   const maxLen = Math.max(0, ...Object.values(history).map(h => h.length));
-  
+
   if (maxLen === 0) {
     return (
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-gray-900/30 backdrop-blur-sm">
@@ -1862,8 +1905,8 @@ function TrafficModal({
     for (const srvHist of Object.values(history)) {
       const idx = srvHist.length - maxLen + i;
       if (idx >= 0 && idx < srvHist.length) {
-         rxSum += (srvHist[idx].rxMb || 0);
-         txSum += (srvHist[idx].txMb || 0);
+        rxSum += (srvHist[idx].rxMb || 0);
+        txSum += (srvHist[idx].txMb || 0);
       }
     }
     rxSeries.push(rxSum);
@@ -1879,9 +1922,9 @@ function TrafficModal({
             <X className="w-5 h-5" />
           </button>
         </div>
-        
+
         <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'} mb-6 px-1`}>Visualizing aggregate network throughput across {Object.keys(history).length} active nodes.</p>
-        
+
         <div className="grid grid-cols-2 gap-6 mt-6">
           <div className={`${darkMode ? 'bg-white/5 border-white/5' : 'bg-gray-50 border-gray-100'} rounded-xl p-4 border`}>
             <div className="flex justify-between items-center mb-2">
@@ -1934,10 +1977,10 @@ function ServerSettingsModal({
 }) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-gray-900/40 backdrop-blur-sm">
-      <motion.div 
-        initial={{ y: 2, opacity: 0 }} 
-        animate={{ y: 0, opacity: 1 }} 
-        exit={{ y: 2, opacity: 0 }} 
+      <motion.div
+        initial={{ y: 2, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 2, opacity: 0 }}
         transition={{ type: "tween", ease: "easeOut", duration: 0.15 }}
         className={`${darkMode ? 'bg-gray-900 border-white/5 text-white' : 'bg-white border-gray-200 text-gray-900'} border rounded-2xl w-full max-w-lg p-7 shadow-2xl`}
       >
@@ -1968,14 +2011,14 @@ function ServerSettingsModal({
           <button onClick={onAnalyzeLogs} className={`py-3 px-4 rounded-xl border font-bold text-sm transition-all ${darkMode ? 'border-white/5 bg-white/5 hover:bg-white/10 text-white' : 'border-gray-200 bg-white hover:bg-gray-50 text-gray-900'}`}>
             Analyze Logs
           </button>
-          <button 
-            onClick={onDeployDocker} 
+          <button
+            onClick={onDeployDocker}
             className={`py-3 px-4 rounded-xl border font-bold text-sm flex items-center justify-center gap-2 transition-all ${darkMode ? 'border-blue-500/20 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400' : 'border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700'}`}
           >
             <Box className="w-4 h-4" /> Custom App
           </button>
-          <button 
-            onClick={onNuke} 
+          <button
+            onClick={onNuke}
             className={`py-3 px-4 rounded-xl border-2 font-bold text-sm flex items-center justify-center gap-2 col-span-2 transition-all ${darkMode ? 'border-red-500/20 bg-red-500/10 hover:bg-red-500/20 text-red-400' : 'border-red-100 bg-red-50 hover:bg-red-100 text-red-600'}`}
           >
             <Shield className="w-4 h-4" /> Nuke Server
@@ -2019,13 +2062,13 @@ function AddModal({ onAdd, darkMode = false, onClose }: { onAdd: (s: any) => voi
   };
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-gray-900/20 backdrop-blur-sm"
     >
-      <motion.div 
+      <motion.div
         initial={{ y: 4, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: 4, opacity: 0 }}
@@ -2044,38 +2087,38 @@ function AddModal({ onAdd, darkMode = false, onClose }: { onAdd: (s: any) => voi
 
         <form onSubmit={handleSubmit} className="space-y-5">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Input 
-              label="Node Name" 
-              value={formData.name} 
+            <Input
+              label="Node Name"
+              value={formData.name}
               darkMode={darkMode}
-              onChange={e => setFormData({...formData, name: e.target.value})} 
+              onChange={e => setFormData({ ...formData, name: e.target.value })}
               placeholder="e.g. Frankfurt-Node-01"
               required
             />
-            <Input 
-              label="Public IP / Host" 
-              value={formData.host} 
+            <Input
+              label="Public IP / Host"
+              value={formData.host}
               darkMode={darkMode}
-              onChange={e => setFormData({...formData, host: e.target.value})} 
+              onChange={e => setFormData({ ...formData, host: e.target.value })}
               placeholder="10.0.x.x or nodes.io"
               required
             />
           </div>
-          
+
           <div className="grid grid-cols-2 gap-4">
-            <Input 
-              label="SSH User" 
-              value={formData.username} 
+            <Input
+              label="SSH User"
+              value={formData.username}
               darkMode={darkMode}
-              onChange={e => setFormData({...formData, username: e.target.value})} 
+              onChange={e => setFormData({ ...formData, username: e.target.value })}
               required
             />
-            <Input 
-              label="SSH Port" 
+            <Input
+              label="SSH Port"
               type="number"
-              value={formData.port.toString()} 
+              value={formData.port.toString()}
               darkMode={darkMode}
-              onChange={e => setFormData({...formData, port: parseInt(e.target.value)})} 
+              onChange={e => setFormData({ ...formData, port: parseInt(e.target.value) })}
               required
             />
           </div>
@@ -2099,21 +2142,20 @@ function AddModal({ onAdd, darkMode = false, onClose }: { onAdd: (s: any) => voi
             </div>
 
             {authType === 'password' ? (
-              <Input 
-                label="Root Password" 
+              <Input
+                label="Root Password"
                 type="password"
-                value={formData.password} 
+                value={formData.password}
                 darkMode={darkMode}
-                onChange={e => setFormData({...formData, password: e.target.value})} 
+                onChange={e => setFormData({ ...formData, password: e.target.value })}
                 placeholder="Password for auth"
                 required
               />
             ) : (
               <div className="space-y-1.5">
                 <label className="text-[10px] uppercase font-bold text-gray-400 tracking-wider ml-1">Private Key File</label>
-                <div className={`relative border-2 border-dashed rounded-xl p-4 transition-all ${
-                  formData.privateKey ? 'border-blue-500/50 bg-blue-500/5' : 'border-white/10 hover:border-white/20 bg-white/5'
-                }`}>
+                <div className={`relative border-2 border-dashed rounded-xl p-4 transition-all ${formData.privateKey ? 'border-blue-500/50 bg-blue-500/5' : 'border-white/10 hover:border-white/20 bg-white/5'
+                  }`}>
                   <input
                     type="file"
                     onChange={handleKeyFileChange}
@@ -2140,15 +2182,15 @@ function AddModal({ onAdd, darkMode = false, onClose }: { onAdd: (s: any) => voi
           </div>
 
           <div className="pt-4 flex gap-3">
-            <button 
-              type="button" 
+            <button
+              type="button"
               onClick={onClose}
               className={`flex-1 py-3 px-4 rounded-xl border font-bold transition-all ${darkMode ? 'border-white/5 bg-white/5 hover:bg-white/10 text-gray-400' : 'border-gray-100 bg-gray-50 hover:bg-gray-100 text-gray-600'}`}
             >
               Cancel
             </button>
-            <button 
-              type="submit" 
+            <button
+              type="submit"
               className="flex-1 py-3 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold transition-all shadow-lg shadow-blue-600/20"
             >
               Link Node
@@ -2164,7 +2206,7 @@ function Input({ label, darkMode = false, ...props }: { label: string, darkMode?
   return (
     <div className="space-y-1.5 flex-1">
       <label className="text-[10px] uppercase font-bold text-gray-400 tracking-wider ml-1">{label}</label>
-      <input 
+      <input
         {...props}
         className={`w-full ${darkMode ? 'bg-white/5 border-white/5 text-white placeholder:text-gray-600' : 'bg-gray-50 border-gray-100 text-gray-900 placeholder:text-gray-300'} border rounded-xl px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all`}
       />
@@ -2213,7 +2255,7 @@ function StorageNode({ server, darkMode = false }: { server: Server, darkMode?: 
           </div>
         )}
       </div>
-      
+
       <div className="space-y-4">
         <div>
           <div className="flex justify-between text-[11px] mb-2">
@@ -2221,12 +2263,11 @@ function StorageNode({ server, darkMode = false }: { server: Server, darkMode?: 
             <span className={`${darkMode ? 'text-gray-300' : 'text-gray-900'} font-mono font-bold`}>{loading ? '---' : telemetry?.disk || 'Unknown'}</span>
           </div>
           <div className={`w-full ${darkMode ? 'bg-white/10' : 'bg-gray-100'} h-2.5 rounded-full overflow-hidden border ${darkMode ? 'border-white/5' : 'border-gray-100/50'}`}>
-            <motion.div 
+            <motion.div
               initial={{ width: 0 }}
               animate={{ width: `${usagePercent}%` }}
-              className={`h-full transition-all duration-1000 ${
-                usagePercent > 90 ? 'bg-red-500' : usagePercent > 70 ? 'bg-amber-400' : 'bg-blue-600'
-              }`} 
+              className={`h-full transition-all duration-1000 ${usagePercent > 90 ? 'bg-red-500' : usagePercent > 70 ? 'bg-amber-400' : 'bg-blue-600'
+                }`}
             />
           </div>
         </div>
@@ -2258,19 +2299,19 @@ function CreateClusterModal({ servers, onCreate, onClose, darkMode = false }: { 
   };
 
   const toggleServer = (id: string) => {
-    setSelectedServerIds(prev => 
+    setSelectedServerIds(prev =>
       prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
     );
   };
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-gray-900/20 backdrop-blur-sm"
     >
-      <motion.div 
+      <motion.div
         initial={{ scale: 0.95, y: 20 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.95, y: 20 }}
@@ -2287,15 +2328,15 @@ function CreateClusterModal({ servers, onCreate, onClose, darkMode = false }: { 
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          <Input 
-            label="Cluster Name" 
-            value={name} 
+          <Input
+            label="Cluster Name"
+            value={name}
             darkMode={darkMode}
-            onChange={e => setName(e.target.value)} 
+            onChange={e => setName(e.target.value)}
             placeholder="e.g. Production Cluster"
             required
           />
-          
+
           <div className="space-y-1.5 flex-1">
             <label className="text-[10px] uppercase font-bold text-gray-400 tracking-wider ml-1">Select Nodes</label>
             <div className={`max-h-48 overflow-y-auto border ${darkMode ? 'border-white/5 bg-white/5' : 'border-gray-100 bg-gray-50'} rounded-xl p-2`}>
@@ -2304,9 +2345,9 @@ function CreateClusterModal({ servers, onCreate, onClose, darkMode = false }: { 
               ) : (
                 servers.map(s => (
                   <label key={s.id} className={`flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-colors ${darkMode ? 'hover:bg-white/5' : 'hover:bg-gray-100'}`}>
-                    <input 
-                      type="checkbox" 
-                      checked={selectedServerIds.includes(s.id)} 
+                    <input
+                      type="checkbox"
+                      checked={selectedServerIds.includes(s.id)}
                       onChange={() => toggleServer(s.id)}
                       className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 bg-transparent border-gray-300"
                     />
@@ -2321,15 +2362,15 @@ function CreateClusterModal({ servers, onCreate, onClose, darkMode = false }: { 
           </div>
 
           <div className="pt-4 flex gap-3">
-            <button 
-              type="button" 
+            <button
+              type="button"
               onClick={onClose}
               className="flex-1 py-3 px-4 rounded-xl border border-gray-100 bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold transition-all"
             >
               Cancel
             </button>
-            <button 
-              type="submit" 
+            <button
+              type="submit"
               disabled={!name}
               className="flex-1 py-3 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold transition-all shadow-lg shadow-blue-600/20 disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -2357,13 +2398,13 @@ function ProdSimulationOverlay({ cluster, darkMode = false, onClose }: { cluster
   }, []);
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-[60] flex items-center justify-center p-4 md:p-12 bg-slate-950/90 backdrop-blur-md"
     >
-      <motion.div 
+      <motion.div
         initial={{ scale: 0.99, y: 4, opacity: 0 }}
         animate={{ scale: 1, y: 0, opacity: 1 }}
         exit={{ scale: 0.99, y: 4, opacity: 0 }}
@@ -2385,9 +2426,9 @@ function ProdSimulationOverlay({ cluster, darkMode = false, onClose }: { cluster
                 </div>
               </div>
             </div>
-            
+
             <div className="h-8 w-px bg-white/10 mx-2" />
-            
+
             <div className="flex gap-1 bg-slate-800/50 p-1 rounded-xl border border-white/5">
               {(['topology', 'logs', 'metrics'] as const).map(tab => (
                 <button
@@ -2401,7 +2442,7 @@ function ProdSimulationOverlay({ cluster, darkMode = false, onClose }: { cluster
             </div>
           </div>
 
-          <button 
+          <button
             onClick={onClose}
             className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center hover:bg-white/5 transition-colors"
           >
@@ -2422,32 +2463,32 @@ function ProdSimulationOverlay({ cluster, darkMode = false, onClose }: { cluster
                   <h3 className="font-bold text-lg mb-2">Ingress Controller</h3>
                   <p className="text-xs text-slate-500 mb-6 font-medium">Auto-scaling NGINX Ingress Proxying</p>
                   <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
-                    <motion.div 
-                      animate={{ width: `${simulatedLoad}%` }} 
-                      className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]" 
+                    <motion.div
+                      animate={{ width: `${simulatedLoad}%` }}
+                      className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]"
                     />
                   </div>
                   <div className="mt-2 text-[10px] font-mono text-slate-400">LOAD: {simulatedLoad.toFixed(1)}%</div>
                 </div>
 
                 <div className="flex-1 bg-white/5 border border-white/10 rounded-[2rem] p-8 overflow-hidden relative">
-                   <div className="flex items-center justify-between mb-6">
-                      <h3 className="font-bold uppercase tracking-widest text-xs text-slate-400">Traffic Flow</h3>
-                      <div className="flex gap-1">
-                        <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                        <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping" />
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="font-bold uppercase tracking-widest text-xs text-slate-400">Traffic Flow</h3>
+                    <div className="flex gap-1">
+                      <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                      <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping" />
+                    </div>
+                  </div>
+                  <div className="space-y-4">
+                    {[1, 2, 3, 4, 5].map(i => (
+                      <div key={i} className="flex items-center gap-4">
+                        <div className="w-2 h-2 rounded-full bg-blue-500/30" />
+                        <div className="flex-1 h-px bg-gradient-to-r from-blue-500/50 to-transparent" />
+                        <span className="text-[9px] font-mono text-slate-600">REQ_{Math.floor(Math.random() * 1000)} OK</span>
                       </div>
-                   </div>
-                   <div className="space-y-4">
-                     {[1,2,3,4,5].map(i => (
-                       <div key={i} className="flex items-center gap-4">
-                         <div className="w-2 h-2 rounded-full bg-blue-500/30" />
-                         <div className="flex-1 h-px bg-gradient-to-r from-blue-500/50 to-transparent" />
-                         <span className="text-[9px] font-mono text-slate-600">REQ_{Math.floor(Math.random()*1000)} OK</span>
-                       </div>
-                     ))}
-                   </div>
-                   <div className="absolute inset-0 bg-gradient-to-b from-transparent to-slate-900/50 pointer-events-none" />
+                    ))}
+                  </div>
+                  <div className="absolute inset-0 bg-gradient-to-b from-transparent to-slate-900/50 pointer-events-none" />
                 </div>
               </div>
 
@@ -2458,7 +2499,7 @@ function ProdSimulationOverlay({ cluster, darkMode = false, onClose }: { cluster
                     <div key={id} className="bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between hover:bg-white/[0.07] transition-all group">
                       <div className="flex items-start justify-between">
                         <div>
-                          <div className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-1">Worker Node 0{idx+1}</div>
+                          <div className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-1">Worker Node 0{idx + 1}</div>
                           <div className="font-bold text-lg">{id.substring(0, 8)}</div>
                         </div>
                         <div className="w-8 h-8 bg-emerald-500/10 rounded-xl flex items-center justify-center border border-emerald-500/20 text-emerald-400">
@@ -2473,12 +2514,12 @@ function ProdSimulationOverlay({ cluster, darkMode = false, onClose }: { cluster
                             <span>{Math.floor(Math.random() * 20 + 40)}%</span>
                           </div>
                           <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                             <div className="h-full bg-emerald-500/50 w-[60%]" />
+                            <div className="h-full bg-emerald-500/50 w-[60%]" />
                           </div>
                         </div>
 
                         <div className="flex gap-2">
-                          {[1,2,3].map(p => (
+                          {[1, 2, 3].map(p => (
                             <div key={p} className="flex-1 aspect-square bg-slate-800/50 rounded-xl flex items-center justify-center border border-white/5">
                               <Database className="w-4 h-4 text-slate-500" />
                             </div>
@@ -2489,7 +2530,7 @@ function ProdSimulationOverlay({ cluster, darkMode = false, onClose }: { cluster
                   ))}
                   {cluster.serverIds.length < 4 && Array.from({ length: 4 - cluster.serverIds.length }).map((_, i) => (
                     <div key={i} className="bg-slate-950/30 border border-white/[0.02] border-dashed rounded-[2rem] flex items-center justify-center text-slate-800">
-                       <Plus className="w-8 h-8 opacity-10" />
+                      <Plus className="w-8 h-8 opacity-10" />
                     </div>
                   ))}
                 </div>
@@ -2512,59 +2553,59 @@ function ProdSimulationOverlay({ cluster, darkMode = false, onClose }: { cluster
 
           {activeTab === 'metrics' && (
             <div className="flex-1 grid grid-cols-3 gap-6">
-               <div className="bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between">
-                  <h4 className="font-bold text-xs uppercase tracking-widest text-slate-500">Request Rate</h4>
-                  <div className="flex-1 flex items-end gap-1 mb-6">
-                    {Array.from({ length: 20 }).map((_, i) => (
-                      <div key={i} className="flex-1 bg-blue-500/20 rounded-t-sm border-t border-blue-500/50" style={{ height: `${Math.random() * 60 + 20}%` }} />
-                    ))}
-                  </div>
-                  <div className="text-4xl font-light">{(Math.random() * 100 + 400).toFixed(0)}<span className="text-sm text-slate-500 ml-2">req/s</span></div>
-               </div>
-               <div className="bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between">
-                  <h4 className="font-bold text-xs uppercase tracking-widest text-slate-500">Latency (p99)</h4>
-                  <div className="flex-1 flex items-end gap-1 mb-6">
-                    {Array.from({ length: 20 }).map((_, i) => (
-                      <div key={i} className="flex-1 bg-purple-500/20 rounded-t-sm border-t border-purple-500/50" style={{ height: `${Math.random() * 30 + 10}%` }} />
-                    ))}
-                  </div>
-                  <div className="text-4xl font-light">{(Math.random() * 5 + 12).toFixed(1)}<span className="text-sm text-slate-500 ml-2">ms</span></div>
-               </div>
-               <div className="bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between">
-                  <h4 className="font-bold text-xs uppercase tracking-widest text-slate-500">Error Rate</h4>
-                  <div className="flex-1 flex items-center justify-center mb-6">
-                     <div className="text-6xl font-black text-emerald-500 opacity-20">0.0%</div>
-                  </div>
-                  <div className="text-4xl font-light text-emerald-400">0.00<span className="text-sm text-emerald-500/50 ml-2">errors</span></div>
-               </div>
+              <div className="bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between">
+                <h4 className="font-bold text-xs uppercase tracking-widest text-slate-500">Request Rate</h4>
+                <div className="flex-1 flex items-end gap-1 mb-6">
+                  {Array.from({ length: 20 }).map((_, i) => (
+                    <div key={i} className="flex-1 bg-blue-500/20 rounded-t-sm border-t border-blue-500/50" style={{ height: `${Math.random() * 60 + 20}%` }} />
+                  ))}
+                </div>
+                <div className="text-4xl font-light">{(Math.random() * 100 + 400).toFixed(0)}<span className="text-sm text-slate-500 ml-2">req/s</span></div>
+              </div>
+              <div className="bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between">
+                <h4 className="font-bold text-xs uppercase tracking-widest text-slate-500">Latency (p99)</h4>
+                <div className="flex-1 flex items-end gap-1 mb-6">
+                  {Array.from({ length: 20 }).map((_, i) => (
+                    <div key={i} className="flex-1 bg-purple-500/20 rounded-t-sm border-t border-purple-500/50" style={{ height: `${Math.random() * 30 + 10}%` }} />
+                  ))}
+                </div>
+                <div className="text-4xl font-light">{(Math.random() * 5 + 12).toFixed(1)}<span className="text-sm text-slate-500 ml-2">ms</span></div>
+              </div>
+              <div className="bg-white/5 border border-white/10 rounded-[2rem] p-8 flex flex-col justify-between">
+                <h4 className="font-bold text-xs uppercase tracking-widest text-slate-500">Error Rate</h4>
+                <div className="flex-1 flex items-center justify-center mb-6">
+                  <div className="text-6xl font-black text-emerald-500 opacity-20">0.0%</div>
+                </div>
+                <div className="text-4xl font-light text-emerald-400">0.00<span className="text-sm text-emerald-500/50 ml-2">errors</span></div>
+              </div>
             </div>
           )}
         </div>
 
         {/* Footer */}
         <div className="h-20 border-t border-white/5 flex items-center justify-between px-10 shrink-0 bg-white/5">
-           <div className="flex items-center gap-6">
-             <div className="flex items-center gap-2">
-               <div className="w-2 h-2 rounded-full bg-blue-500" />
-               <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Endpoint: api.kubecast.cloud</span>
-             </div>
-             <div className="flex items-center gap-2">
-               <div className="w-2 h-2 rounded-full bg-emerald-500" />
-               <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Region: us-east-1 (Global)</span>
-             </div>
-           </div>
-           
-           <div className="flex items-center gap-4">
-              <button className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold hover:bg-white/10 transition-colors uppercase tracking-widest">
-                Export Report
-              </button>
-              <button 
-                onClick={onClose}
-                className="px-6 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 transition-all uppercase tracking-widest shadow-lg shadow-blue-600/20"
-              >
-                Terminate Simulation
-              </button>
-           </div>
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-blue-500" />
+              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Endpoint: api.kubecast.cloud</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Region: us-east-1 (Global)</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <button className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold hover:bg-white/10 transition-colors uppercase tracking-widest">
+              Export Report
+            </button>
+            <button
+              onClick={onClose}
+              className="px-6 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 transition-all uppercase tracking-widest shadow-lg shadow-blue-600/20"
+            >
+              Terminate Simulation
+            </button>
+          </div>
         </div>
       </motion.div>
     </motion.div>
@@ -2573,15 +2614,15 @@ function ProdSimulationOverlay({ cluster, darkMode = false, onClose }: { cluster
 function NuclearWarningModal({ server, darkMode = false, onConfirm, onClose }: { server: Server, darkMode?: boolean, onConfirm: () => void, onClose: () => void }) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-gray-900/40 backdrop-blur-sm">
-      <motion.div 
-        initial={{ y: 4, opacity: 0 }} 
-        animate={{ y: 0, opacity: 1 }} 
-        exit={{ y: 4, opacity: 0 }} 
+      <motion.div
+        initial={{ y: 4, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 4, opacity: 0 }}
         transition={{ type: "tween", ease: "easeOut", duration: 0.15 }}
         className={`${darkMode ? 'bg-gray-900 border-white/5 text-white' : 'bg-white border-gray-200 text-gray-900'} border rounded-[2rem] w-full max-w-md p-10 shadow-2xl text-center`}
       >
         <div className={`w-16 h-16 ${darkMode ? 'bg-amber-500/10 border-amber-500/20' : 'bg-amber-50 border-amber-100'} rounded-2xl flex items-center justify-center mx-auto mb-6 border`}>
-           <AlertCircle className="w-8 h-8 text-amber-500" />
+          <AlertCircle className="w-8 h-8 text-amber-500" />
         </div>
         <h2 className="text-xl font-bold mb-2 uppercase tracking-tight">Destructive Action</h2>
         <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'} mb-8 leading-relaxed`}>
@@ -2600,14 +2641,14 @@ function NuclearConfirmationModal({ server, isDestroying, darkMode = false, onCo
   const [typedHost, setTypedHost] = useState('');
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.15 }}
       className={`fixed inset-0 z-[75] flex items-center justify-center p-8 ${darkMode ? 'bg-red-950/80' : 'bg-red-950/60'} backdrop-blur-md`}
     >
-      <motion.div 
+      <motion.div
         initial={{ scale: 0.99, y: 4, opacity: 0 }}
         animate={{ scale: 1, y: 0, opacity: 1 }}
         exit={{ scale: 0.99, y: 4, opacity: 0 }}
@@ -2615,12 +2656,12 @@ function NuclearConfirmationModal({ server, isDestroying, darkMode = false, onCo
         className={`${darkMode ? 'bg-gray-900 border-red-500/20' : 'bg-white border-red-100'} border rounded-[2rem] w-full max-w-lg p-10 shadow-2xl relative overflow-hidden`}
       >
         <div className="absolute top-0 left-0 w-full h-2 bg-red-600 animate-pulse" />
-        
+
         <div className="flex flex-col items-center text-center">
           <div className={`w-20 h-20 ${darkMode ? 'bg-red-500/10 border-red-500/20' : 'bg-red-100 border-red-50'} rounded-3xl flex items-center justify-center mb-8 border-4`}>
             <Shield className="w-10 h-10 text-red-600 animate-bounce" />
           </div>
-          
+
           <h2 className={`text-2xl font-black ${darkMode ? 'text-white' : 'text-gray-900'} mb-2 uppercase tracking-tight`}>Final Authorization</h2>
           <p className={`${darkMode ? 'text-gray-400' : 'text-gray-500'} text-sm mb-8 leading-relaxed`}>
             This is the <span className="font-bold text-red-600 underline">LAST WARNING</span>. System wipe on <span className={`font-mono ${darkMode ? 'bg-white/10 text-white' : 'bg-gray-100 text-gray-800'} px-1.5 py-0.5 rounded`}>{server.host}</span> cannot be undone.
@@ -2628,7 +2669,7 @@ function NuclearConfirmationModal({ server, isDestroying, darkMode = false, onCo
 
           <div className="w-full space-y-4 mb-8">
             <div className="text-[10px] uppercase font-bold text-gray-400 tracking-widest">Type the host to confirm</div>
-            <input 
+            <input
               value={typedHost}
               onChange={e => setTypedHost(e.target.value)}
               placeholder={server.host}
@@ -2638,14 +2679,14 @@ function NuclearConfirmationModal({ server, isDestroying, darkMode = false, onCo
           </div>
 
           <div className="flex gap-3 w-full">
-            <button 
+            <button
               onClick={onClose}
               disabled={isDestroying}
               className="flex-1 py-4 px-4 rounded-xl bg-gray-50 border border-gray-100 hover:bg-gray-100 text-gray-600 font-bold transition-all"
             >
               Abort
             </button>
-            <button 
+            <button
               onClick={onConfirm}
               disabled={typedHost !== server.host || isDestroying}
               className={`flex-2 py-4 px-8 rounded-xl font-bold text-white transition-all shadow-lg shadow-red-600/20 ${typedHost === server.host && !isDestroying ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-200 cursor-not-allowed'}`}
@@ -2735,22 +2776,22 @@ function DeployDockerfileModal({ server, darkMode = false, onClose }: { server: 
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="fixed inset-0 z-[100] flex items-center justify-center p-4 md:p-8 bg-gray-900/60 backdrop-blur-sm">
-      <motion.div 
-        initial={{ y: 4, opacity: 0 }} 
-        animate={{ y: 0, opacity: 1 }} 
-        exit={{ y: 4, opacity: 0 }} 
+      <motion.div
+        initial={{ y: 4, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 4, opacity: 0 }}
         transition={{ type: "tween", ease: "easeOut", duration: 0.15 }}
         className={`${darkMode ? 'bg-gray-900 border-white/5 text-white' : 'bg-white border-gray-200 text-gray-900'} border rounded-[2rem] w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden m-4`}
       >
         <div className={`p-6 border-b ${darkMode ? 'border-white/5' : 'border-gray-100'} flex items-center justify-between shrink-0`}>
           <div className="flex items-center gap-3">
-             <div className={`w-10 h-10 ${darkMode ? 'bg-blue-600/20 border-blue-500/20 text-blue-400' : 'bg-blue-50 border-blue-100 text-blue-600'} rounded-xl flex items-center justify-center border`}>
-               <Box className="w-5 h-5" />
-             </div>
-             <div>
-               <h2 className="text-xl font-bold tracking-tight">Deploy Custom App</h2>
-               <p className="text-xs text-gray-500 font-medium">Build and run a Dockerfile on <span className={`font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{server.name}</span></p>
-             </div>
+            <div className={`w-10 h-10 ${darkMode ? 'bg-blue-600/20 border-blue-500/20 text-blue-400' : 'bg-blue-50 border-blue-100 text-blue-600'} rounded-xl flex items-center justify-center border`}>
+              <Box className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold tracking-tight">Deploy Custom App</h2>
+              <p className="text-xs text-gray-500 font-medium">Build and run a Dockerfile on <span className={`font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{server.name}</span></p>
+            </div>
           </div>
           <button onClick={onClose} className={`text-gray-400 transition-colors p-2 rounded-full ${darkMode ? 'hover:text-white hover:bg-white/10' : 'bg-gray-50 hover:bg-gray-100 hover:text-gray-900'}`}>
             <X className="w-5 h-5" />
@@ -2759,51 +2800,50 @@ function DeployDockerfileModal({ server, darkMode = false, onClose }: { server: 
 
         <div className={`p-6 flex-1 overflow-y-auto space-y-6 ${darkMode ? 'bg-gray-900/50' : 'bg-gray-50/50'} terminal-scrollbar`}>
           <div className="grid grid-cols-2 gap-4">
-             <div>
-               <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-1.5">Container Name</label>
-               <input 
-                 value={containerName} 
-                 onChange={e => setContainerName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '-'))}
-                 className={`w-full border rounded-xl px-4 py-3 text-sm font-bold outline-none transition-all shadow-sm ${darkMode ? 'bg-white/5 border-white/5 focus:border-blue-500 text-white' : 'bg-white border-gray-200 focus:border-blue-500 text-gray-900'}`}
-                 placeholder="e.g. my-app"
-               />
-             </div>
-             <div>
-               <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-1.5">Port Mapping (Host:Container)</label>
-               <input 
-                 value={portMapping} 
-                 onChange={e => setPortMapping(e.target.value)}
-                 className={`w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all shadow-sm ${darkMode ? 'bg-white/5 border-white/5 focus:border-blue-500 text-white' : 'bg-white border-gray-200 focus:border-blue-500 text-gray-900'}`}
-                 placeholder="e.g. 8080:80"
-               />
-             </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-1.5">Container Name</label>
+              <input
+                value={containerName}
+                onChange={e => setContainerName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '-'))}
+                className={`w-full border rounded-xl px-4 py-3 text-sm font-bold outline-none transition-all shadow-sm ${darkMode ? 'bg-white/5 border-white/5 focus:border-blue-500 text-white' : 'bg-white border-gray-200 focus:border-blue-500 text-gray-900'}`}
+                placeholder="e.g. my-app"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-1.5">Port Mapping (Host:Container)</label>
+              <input
+                value={portMapping}
+                onChange={e => setPortMapping(e.target.value)}
+                className={`w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all shadow-sm ${darkMode ? 'bg-white/5 border-white/5 focus:border-blue-500 text-white' : 'bg-white border-gray-200 focus:border-blue-500 text-gray-900'}`}
+                placeholder="e.g. 8080:80"
+              />
+            </div>
           </div>
 
           <div>
-             <div className="flex items-center justify-between mb-2">
-               <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest">Dockerfile</label>
-               <div className="flex gap-2">
-                 {(['custom', 'nginx', 'nodejs', 'python', 'nextcloud'] as const).map(t => (
-                   <button
-                     key={t}
-                     onClick={() => handleTemplateChange(t)}
-                     className={`px-3 py-1 text-xs font-bold rounded-lg transition-colors border ${
-                       template === t 
-                         ? 'bg-blue-600 text-white border-blue-600' 
-                         : (darkMode ? 'bg-white/5 text-gray-400 border-white/5 hover:bg-white/10' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50')
-                     }`}
-                   >
-                     {t.charAt(0).toUpperCase() + t.slice(1)}
-                   </button>
-                 ))}
-               </div>
-             </div>
-             <textarea 
-               value={dockerfile}
-               onChange={e => setDockerfile(e.target.value)}
-               className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-4 text-sm font-mono text-emerald-400 outline-none focus:ring-2 focus:ring-blue-500 shadow-inner h-64 resize-y"
-               spellCheck={false}
-             />
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest">Dockerfile</label>
+              <div className="flex gap-2">
+                {(['custom', 'nginx', 'nodejs', 'python', 'nextcloud'] as const).map(t => (
+                  <button
+                    key={t}
+                    onClick={() => handleTemplateChange(t)}
+                    className={`px-3 py-1 text-xs font-bold rounded-lg transition-colors border ${template === t
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : (darkMode ? 'bg-white/5 text-gray-400 border-white/5 hover:bg-white/10' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50')
+                      }`}
+                  >
+                    {t.charAt(0).toUpperCase() + t.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <textarea
+              value={dockerfile}
+              onChange={e => setDockerfile(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-4 text-sm font-mono text-emerald-400 outline-none focus:ring-2 focus:ring-blue-500 shadow-inner h-64 resize-y"
+              spellCheck={false}
+            />
           </div>
 
           {logs && (
@@ -2817,22 +2857,22 @@ function DeployDockerfileModal({ server, darkMode = false, onClose }: { server: 
         </div>
 
         <div className={`p-6 border-t flex gap-3 justify-between items-center shrink-0 ${darkMode ? 'bg-gray-900 border-white/5' : 'bg-white border-gray-100'}`}>
-          <button 
+          <button
             onClick={handleStop}
             disabled={status === 'deploying'}
             className={`px-4 py-3 rounded-xl font-bold transition-all disabled:opacity-50 flex items-center gap-2 text-sm ${darkMode ? 'text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20' : 'text-red-600 hover:bg-red-50 border border-transparent hover:border-red-100'}`}
           >
             <Trash2 className="w-4 h-4" /> Stop & Remove App
           </button>
-          
+
           <div className="flex gap-3">
-            <button 
-              onClick={onClose} 
+            <button
+              onClick={onClose}
               className={`px-6 py-3 rounded-xl font-bold transition-colors ${darkMode ? 'text-gray-400 hover:bg-white/5' : 'text-gray-600 hover:bg-gray-100'}`}
             >
               {status === 'success' ? 'Done' : 'Cancel'}
             </button>
-            <button 
+            <button
               onClick={handleDeploy}
               disabled={status === 'deploying'}
               className="px-8 py-3 rounded-xl font-bold text-white transition-all shadow-lg bg-blue-600 hover:bg-blue-700 shadow-blue-600/20 disabled:bg-gray-400 flex items-center gap-2"
@@ -2841,6 +2881,134 @@ function DeployDockerfileModal({ server, darkMode = false, onClose }: { server: 
               {status === 'deploying' ? 'Deploying...' : status === 'error' ? 'Retry Deploy' : 'Deploy Container'}
             </button>
           </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function DeployTemplateModal({ servers, darkMode = false, onClose, onStart }: { servers: Server[], darkMode?: boolean, onClose: () => void, onStart: (server: Server, config: any) => void }) {
+  const [config, setConfig] = useState<any>(null);
+  const [selectedServerId, setSelectedServerId] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/template/config/defaults')
+      .then(res => res.json())
+      .then(data => {
+        setConfig(data);
+        setLoading(false);
+      });
+    if (servers.length > 0) setSelectedServerId(servers[0].id);
+  }, []);
+
+  if (loading || !config) return null;
+
+  const handleProfileToggle = (p: string) => {
+    const profiles = config.profiles.includes(p)
+      ? config.profiles.filter((x: string) => x !== p)
+      : [...config.profiles, p];
+    setConfig({ ...config, profiles });
+  };
+
+  const handleDeploy = () => {
+    const server = servers.find(s => s.id === selectedServerId);
+    if (!server) return;
+    onStart(server, config);
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-gray-900/40 backdrop-blur-md"
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className={`${darkMode ? 'bg-gray-900 border-white/5 text-white' : 'bg-white border-gray-200 text-gray-900'} border rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden`}
+      >
+        <div className={`p-8 border-b ${darkMode ? 'border-white/5' : 'border-gray-100'} flex items-center justify-between`}>
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-600/30">
+              <LayoutGrid className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-black tracking-tight">Deploy VPS Template</h2>
+              <p className="text-sm text-gray-500 font-medium">Full Docker Compose stack with Traefik & Authelia</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-xl transition-colors">
+            <X className="w-5 h-5 text-gray-400" />
+          </button>
+        </div>
+
+        <div className="p-8 space-y-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-4">
+              <label className="text-[10px] uppercase font-bold text-gray-400 tracking-widest ml-1">Target Host</label>
+              <select
+                value={selectedServerId}
+                onChange={e => setSelectedServerId(e.target.value)}
+                className={`w-full px-4 py-3 rounded-2xl border text-sm font-bold outline-none transition-all ${darkMode ? 'bg-white/5 border-white/5 text-white focus:border-blue-500' : 'bg-gray-50 border-gray-100 focus:border-blue-500'
+                  }`}
+              >
+                {servers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.host})</option>)}
+              </select>
+
+              <Input
+                label="Primary Domain"
+                value={config.domain}
+                darkMode={darkMode}
+                onChange={e => setConfig({ ...config, domain: e.target.value })}
+                placeholder="e.g. apps.yourdomain.com"
+              />
+              <Input
+                label="SSL Email (ACME)"
+                value={config.email}
+                darkMode={darkMode}
+                onChange={e => setConfig({ ...config, email: e.target.value })}
+                placeholder="admin@yourdomain.com"
+              />
+            </div>
+
+            <div className="space-y-4">
+              <label className="text-[10px] uppercase font-bold text-gray-400 tracking-widest ml-1">Available Profiles</label>
+              <div className="grid grid-cols-1 gap-2 max-h-[180px] overflow-y-auto pr-2 terminal-scrollbar">
+                {['required', 'aiostreams', 'vaultwarden', 'nextcloud', 'plex', 'monitoring'].map(p => (
+                  <button
+                    key={p}
+                    onClick={() => handleProfileToggle(p)}
+                    disabled={p === 'required'}
+                    className={`px-4 py-3 rounded-xl text-xs font-bold text-left transition-all flex items-center justify-between border ${config.profiles.includes(p)
+                        ? (darkMode ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-blue-50 border-blue-600 text-blue-700')
+                        : (darkMode ? 'bg-white/5 border-white/5 text-gray-400' : 'bg-gray-50 border-gray-100 text-gray-500')
+                      }`}
+                  >
+                    <span>{p.toUpperCase()}</span>
+                    {config.profiles.includes(p) && <CheckCircle2 className="w-4 h-4" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20">
+            <Shield className="w-6 h-6 text-amber-500 shrink-0" />
+            <p className="text-[11px] text-amber-600 font-medium leading-relaxed">
+              Secrets for <span className="font-black">Authelia JWT</span> and <span className="font-black">Session</span> have been automatically generated for security.
+            </p>
+          </div>
+
+          <button
+            onClick={handleDeploy}
+            className="w-full py-5 rounded-2xl bg-blue-600 text-white font-black text-sm hover:bg-blue-700 transition-all shadow-xl shadow-blue-600/30 flex items-center justify-center gap-2"
+          >
+            <Play className="w-4 h-4 fill-current" />
+            Initialize VPS Stack
+          </button>
         </div>
       </motion.div>
     </motion.div>

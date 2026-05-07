@@ -13,6 +13,9 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
+    "test": "tsx --test src/**/*.test.ts",
+    "test:template": "tsx --test src/deploy/template.test.ts",
+    "test:watch": "tsx --watch --test src/**/*.test.ts",
     "electron:dev": "cross-env NODE_ENV=development concurrently \"(lsof -t -i:3000 | xargs kill -9 2>/dev/null || true) && npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
     "electron:build": "npm run build && electron-builder -m",
     "dist": "npm run electron:build"
