@@ -11,6 +11,13 @@ export interface Server {
     docker: boolean;
     k8s: boolean;
   };
+  telemetry?: {
+    cpu?: string;
+    ram?: string;
+    disk?: string;
+    docker?: string;
+    k3s?: string;
+  };
 }
 
 export interface Cluster {

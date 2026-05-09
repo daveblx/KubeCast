@@ -1,7 +1,6 @@
 import express, { Request, Response } from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { fileURLToPath } from "url";
 import { Client } from "ssh2";
 import { WebSocketServer } from "ws";
 import fs from "fs";
@@ -22,8 +21,6 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), "db.json");
 
@@ -109,7 +106,7 @@ async function startServer() {
     const { name, host, username, port, password, privateKey } = req.body;
 
     if (!name || !host || !username) {
-      return res.status(400).json({ error: "name, host, and username are required" });
+      res.status(400).json({ error: "name, host, and username are required" });
     }
 
     const db = getDB();
@@ -155,7 +152,7 @@ async function startServer() {
   app.get("/api/servers/:id", (req: Request, res: Response) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
-    if (!server) return res.status(404).json({ error: "Server not found" });
+    if (!server) res.status(404).json({ error: "Server not found" });
     const { password: _, privateKey: __, ...sanitized } = server;
     res.json(sanitized);
   });
@@ -163,7 +160,7 @@ async function startServer() {
   app.put("/api/servers/:id", (req: Request, res: Response) => {
     const db = getDB();
     const idx = db.servers.findIndex((s: any) => s.id === req.params.id);
-    if (idx === -1) return res.status(404).json({ error: "Server not found" });
+    if (idx === -1) res.status(404).json({ error: "Server not found" });
     db.servers[idx] = { ...db.servers[idx], ...req.body };
     saveDB(db);
     const { password: _, privateKey: __, ...sanitized } = db.servers[idx];
@@ -173,11 +170,11 @@ async function startServer() {
   app.post("/api/servers/:id/upload", upload.single("file"), (req: any, res: Response) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
-    if (!server) return res.status(404).json({ error: "Server not found" });
-    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    if (!server) res.status(404).json({ error: "Server not found" });
+    if (!req.file) res.status(400).json({ error: "No file uploaded" });
 
     if (!req.file.path.startsWith("/tmp/")) {
-      return res.status(400).json({ error: "Invalid local file path" });
+      res.status(400).json({ error: "Invalid local file path" });
     }
 
     const safeOriginalName = path.basename(req.file.originalname);
@@ -186,7 +183,7 @@ async function startServer() {
     if (!sanitizedRemotePath) {
       const localPath = req.file.path.startsWith("/tmp/") ? path.join("/tmp", path.basename(req.file.path)) : null;
       if (localPath) fs.unlinkSync(localPath);
-      return res.status(400).json({
+      res.status(400).json({
         error: "Remote path must be within /tmp/ or /home/<username>/",
       });
     }
@@ -197,7 +194,7 @@ async function startServer() {
         conn.sftp((err: any, sftp: any) => {
           if (err) {
             conn.end();
-            return res.status(500).json({ error: err.message });
+            res.status(500).json({ error: err.message });
           }
 
           const safeLocalPath = path.join("/tmp", path.basename(req.file.path));
@@ -214,6 +211,7 @@ async function startServer() {
             res.status(500).json({ error: err.message });
           });
           readStream.pipe(writeStream);
+          return;
         });
       })
       .on("error", (err: any) => {
@@ -225,7 +223,7 @@ async function startServer() {
   app.post("/api/servers/:id/destroy", (req: Request, res: Response) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
-    if (!server) return res.status(404).json({ error: "Server not found" });
+    if (!server) res.status(404).json({ error: "Server not found" });
 
     const conn = new Client();
     conn
@@ -234,7 +232,7 @@ async function startServer() {
         conn.exec("sudo -S -p 'SUDO_PROMPT:' bash -s", (err, stream) => {
           if (err) {
             conn.end();
-            return res.status(500).json({ error: err.message });
+            res.status(500).json({ error: err.message });
           }
 
           // Send password first
@@ -259,7 +257,6 @@ async function startServer() {
 
           let output = "";
           stream.on("data", (data: Buffer) => (output += data.toString()));
-          stream.stderr.on("data", (data: Buffer) => (output += data.toString()));
           stream.on("close", () => {
             conn.end();
             const dbAfter = getDB();
@@ -278,11 +275,11 @@ async function startServer() {
   app.post("/api/servers/:id/exec", (req: Request, res: Response) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
-    if (!server) return res.status(404).json({ error: "Server not found" });
+    if (!server) res.status(404).json({ error: "Server not found" });
 
     const { command } = req.body;
     if (!command || typeof command !== "string") {
-      return res.status(400).json({ error: "Missing or invalid command" });
+      res.status(400).json({ error: "Missing or invalid command" });
     }
 
     let safeCommand = "";
@@ -294,7 +291,7 @@ async function startServer() {
     }
 
     if (!safeCommand) {
-      return res.status(403).json({
+      res.status(403).json({
         error: "Command not permitted. Use one of the allowed commands.",
         allowed: [...ALLOWED_EXEC_COMMANDS],
       });
@@ -308,7 +305,7 @@ async function startServer() {
         conn.exec("/bin/sh -s", (err, stream) => {
           if (err) {
             conn.end();
-            return res.status(500).json({ error: err.message });
+            res.status(500).json({ error: err.message });
           }
           stream.write(safeCommand + "\n");
           stream.end();
@@ -330,22 +327,22 @@ async function startServer() {
   app.post("/api/servers/:id/deploy-dockerfile", (req: Request, res: Response) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
-    if (!server) return res.status(404).json({ error: "Server not found" });
+    if (!server) res.status(404).json({ error: "Server not found" });
 
     const { dockerfile, containerName, portMapping } = req.body;
     if (!dockerfile || !containerName) {
-      return res.status(400).json({ error: "Missing parameters" });
+      res.status(400).json({ error: "Missing parameters" });
     }
 
     if (typeof containerName !== 'string' || !/^[a-z0-9_-]{1,64}$/.test(containerName)) {
-      return res.status(400).json({ error: "Invalid container name. Only lowercase alphanumeric, hyphens, and underscores allowed." });
+      res.status(400).json({ error: "Invalid container name. Only lowercase alphanumeric, hyphens, and underscores allowed." });
     }
     const safeContainerName = containerName;
 
     let safePortFlag = "";
     if (portMapping) {
       if (typeof portMapping !== 'string' || !/^\d{1,5}:\d{1,5}$/.test(portMapping.trim())) {
-        return res.status(400).json({ error: "Invalid port mapping format. Use HOST:CONTAINER (e.g. 8080:80)" });
+        res.status(400).json({ error: "Invalid port mapping format. Use HOST:CONTAINER (e.g. 8080:80)" });
       }
       safePortFlag = `-p ${portMapping.trim()}`;
     }
@@ -354,7 +351,7 @@ async function startServer() {
     try {
       fs.writeFileSync(localTmpPath, dockerfile);
     } catch (e: any) {
-      return res.status(500).json({ error: "Failed to write temp Dockerfile: " + e.message });
+      res.status(500).json({ error: "Failed to write temp Dockerfile: " + e.message });
     }
 
     const workDir = `/tmp/kubecast-deploy-${safeContainerName}-${Date.now()}`;
@@ -367,7 +364,7 @@ async function startServer() {
         conn.exec(setupCmd, (err, stream) => {
           if (err) {
             conn.end();
-            return res.status(500).json({ error: err.message });
+            res.status(500).json({ error: err.message });
           }
 
           stream.write(dockerfile);
@@ -377,7 +374,7 @@ async function startServer() {
             if (code !== 0) {
               conn.end();
               if (fs.existsSync(localTmpPath)) fs.unlinkSync(localTmpPath);
-              return res.status(500).json({ error: `Setup failed with code ${code}` });
+              res.status(500).json({ error: `Setup failed with code ${code}` });
             }
 
             const buildAndRun = [
@@ -391,7 +388,7 @@ async function startServer() {
               if (execErr) {
                 conn.end();
                 if (fs.existsSync(localTmpPath)) fs.unlinkSync(localTmpPath);
-                return res.status(500).json({ error: execErr.message });
+                res.status(500).json({ error: execErr.message });
               }
               execStream.write(server.password + "\n");
               execStream.write(buildAndRun + "\n");
@@ -424,11 +421,11 @@ async function startServer() {
   app.post("/api/servers/:id/stop-container", (req: Request, res: Response) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
-    if (!server) return res.status(404).json({ error: "Server not found" });
+    if (!server) res.status(404).json({ error: "Server not found" });
 
     const { containerName } = req.body;
     if (typeof containerName !== 'string' || !/^[a-z0-9_-]{1,64}$/.test(containerName)) {
-      return res.status(400).json({ error: "Invalid container name" });
+      res.status(400).json({ error: "Invalid container name" });
     }
     const safeContainerName = containerName;
 
@@ -438,7 +435,7 @@ async function startServer() {
         conn.exec("sudo -S -p '' bash -s", (err, stream) => {
           if (err) {
             conn.end();
-            return res.status(500).json({ error: err.message });
+            res.status(500).json({ error: err.message });
           }
           stream.write(server.password + "\n");
           stream.write(`docker rm -f ${safeContainerName}\n`);
@@ -463,7 +460,7 @@ async function startServer() {
   app.get("/api/servers/:id/stats", (req: Request, res: Response) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
-    if (!server) return res.status(404).json({ error: "Server not found" });
+    if (!server) res.status(404).json({ error: "Server not found" });
 
     const conn = new Client();
     conn
@@ -472,7 +469,7 @@ async function startServer() {
         conn.exec(statsCmd, (err, stream) => {
           if (err) {
             conn.end();
-            return res.status(500).json({ error: err.message });
+            res.status(500).json({ error: err.message });
           }
           let output = "";
           stream.on("data", (data: Buffer) => (output += data.toString()));
@@ -500,7 +497,7 @@ async function startServer() {
   app.get("/api/servers/:id/containers", (req: Request, res: Response) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
-    if (!server) return res.status(404).json({ error: "Server not found" });
+    if (!server) res.status(404).json({ error: "Server not found" });
 
     const conn = new Client();
     conn
@@ -510,7 +507,7 @@ async function startServer() {
         conn.exec(cmd, (err, stream) => {
           if (err) {
             conn.end();
-            return res.status(500).json({ error: err.message });
+            res.status(500).json({ error: err.message });
           }
           let output = "";
           stream.on("data", (data: Buffer) => (output += data.toString()));
@@ -537,11 +534,11 @@ async function startServer() {
   app.delete("/api/servers/:id/containers/:name", (req: Request, res: Response) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
-    if (!server) return res.status(404).json({ error: "Server not found" });
+    if (!server) res.status(404).json({ error: "Server not found" });
 
     const containerName = req.params.name;
     if (!/^[a-z0-9_-]{1,64}$/.test(containerName)) {
-      return res.status(400).json({ error: "Invalid container name" });
+      res.status(400).json({ error: "Invalid container name" });
     }
 
     const conn = new Client();
@@ -550,7 +547,7 @@ async function startServer() {
         conn.exec("sudo -S -p '' bash -s", (err, stream) => {
           if (err) {
             conn.end();
-            return res.status(500).json({ error: err.message });
+            res.status(500).json({ error: err.message });
           }
           stream.write(server.password + "\n");
           stream.write(`docker rm -f ${containerName}\n`);
@@ -575,7 +572,7 @@ async function startServer() {
   app.post("/api/clusters/:id/deploy-sample", async (req: Request, res: Response) => {
     const db = getDB();
     const cluster = db.clusters.find((c: any) => c.id === req.params.id);
-    if (!cluster) return res.status(404).json({ error: "Cluster not found" });
+    if (!cluster) res.status(404).json({ error: "Cluster not found" });
     const results: any[] = [];
     for (const serverId of cluster.serverIds) {
       const server = db.servers.find((s: any) => s.id === serverId);
@@ -591,7 +588,7 @@ async function startServer() {
               if (err) {
                 results.push({ serverId, error: err.message });
                 conn.end();
-                return resolve(null);
+                resolve(null);
               }
               let output = "";
               let errorStr = "";
@@ -617,7 +614,7 @@ async function startServer() {
   app.post("/api/clusters/:id/simulate-load", async (req: Request, res: Response) => {
     const db = getDB();
     const cluster = db.clusters.find((c: any) => c.id === req.params.id);
-    if (!cluster) return res.status(404).json({ error: "Cluster not found" });
+    if (!cluster) res.status(404).json({ error: "Cluster not found" });
     const results: any[] = [];
     for (const serverId of cluster.serverIds) {
       const server = db.servers.find((s: any) => s.id === serverId);
@@ -634,7 +631,7 @@ async function startServer() {
               if (err) {
                 results.push({ serverId, error: err.message });
                 conn.end();
-                return resolve(null);
+                resolve(null);
               }
               stream.on("close", (code: number) => {
                 results.push({ serverId, code, output: "Load simulation started" });
@@ -660,12 +657,12 @@ async function startServer() {
   app.get("/api/clusters/:id", (req: Request, res: Response) => {
     const db = getDB();
     const cluster = db.clusters.find((c: any) => c.id === req.params.id);
-    if (!cluster) return res.status(404).json({ error: "Cluster not found" });
+    if (!cluster) res.status(404).json({ error: "Cluster not found" });
     res.json(cluster);
   });
   app.post("/api/clusters", (req: Request, res: Response) => {
     const { name, serverIds } = req.body;
-    if (!name) return res.status(400).json({ error: "name is required" });
+    if (!name) res.status(400).json({ error: "name is required" });
     const db = getDB();
     const newCluster = {
       id: crypto.randomUUID(),
@@ -679,7 +676,7 @@ async function startServer() {
   app.put("/api/clusters/:id", (req: Request, res: Response) => {
     const db = getDB();
     const idx = db.clusters.findIndex((c: any) => c.id === req.params.id);
-    if (idx === -1) return res.status(404).json({ error: "Cluster not found" });
+    if (idx === -1) res.status(404).json({ error: "Cluster not found" });
     db.clusters[idx] = { ...db.clusters[idx], ...req.body };
     saveDB(db);
     res.json(db.clusters[idx]);
@@ -694,7 +691,7 @@ async function startServer() {
   app.get("/api/servers/:id/telemetry", async (req: Request, res: Response) => {
     const db = getDB();
     const server = db.servers.find((s: any) => s.id === req.params.id);
-    if (!server) return res.status(404).json({ error: "Server not found" });
+    if (!server) res.status(404).json({ error: "Server not found" });
 
     const conn = new Client();
     conn
@@ -703,10 +700,11 @@ async function startServer() {
           echo "disk: $(df -h / | tail -1 | awk '{print $5}')"
           echo "disk_free: $(df -h / | tail -1 | awk '{print $4}')"
           echo "disk_total: $(df -h / | tail -1 | awk '{print $2}')"
+          echo "disk_usage_all: $(df -h --output=source,size,used,avail,pcent,target -x tmpfs -x devtmpfs | tail -n +2 | tr '\n' ';')"
           echo "cpu: $(sh -lc 'if [ -r /proc/stat ]; then read -r _ u n s i iw irq sir st g gn < /proc/stat; t1=$((u+n+s+i+iw+irq+sir+st)); idle1=$i; sleep 0.5; read -r _ u n s i iw irq sir st g gn < /proc/stat; t2=$((u+n+s+i+iw+irq+sir+st)); idle2=$i; dt=$((t2-t1)); didle=$((idle2-idle1)); if [ \"$dt\" -gt 0 ]; then awk \"BEGIN { printf \\\"%.1f\\\", (1-($didle/$dt))*100 }\"; else echo 0; fi; else echo 0; fi')"
           echo "ram: $(sh -lc 'if [ -r /proc/meminfo ]; then total=$(awk \"/^MemTotal:/ {print \\$2}\" /proc/meminfo); avail=$(awk \"/^MemAvailable:/ {print \\$2}\" /proc/meminfo); if [ -n \"$total\" ] && [ -n \"$avail\" ] && [ \"$total\" -gt 0 ]; then awk \"BEGIN { printf \\\"%.1f\\\", (($total-$avail)/$total)*100 }\"; else echo 0; fi; else echo 0; fi')"
           echo "ram_total_mb: $(sh -lc 'awk \"/^MemTotal:/ { printf \\\"%.0f\\\", \\$2/1024 }\" /proc/meminfo 2>/dev/null || echo 0')"
-          echo "ram_available_mb: $(sh -lc 'awk \"/^MemAvailable:/ { printf \\\"%.0f\\\", \\$2/1024 }\" /proc/meminfo 2>/dev/null || echo 0')"
+          echo "ram_available_mb: $(sh -lc 'awk \"/^MemAvailable:/ { printf \\$2/1024 }\" /proc/meminfo 2>/dev/null || echo 0')"
           echo "swap_used_mb: $(sh -lc 'if [ -r /proc/meminfo ]; then st=$(awk \"/^SwapTotal:/ {print \\$2}\" /proc/meminfo); sf=$(awk \"/^SwapFree:/ {print \\$2}\" /proc/meminfo); if [ -n \"$st\" ] && [ -n \"$sf\" ]; then awk \"BEGIN { printf \\\"%.0f\\\", (($st-$sf)/1024) }\"; else echo 0; fi; else echo 0; fi')"
           echo "load1: $(sh -lc 'awk \"{print \\$1}\" /proc/loadavg 2>/dev/null || echo 0')"
           echo "load5: $(sh -lc 'awk \"{print \\$2}\" /proc/loadavg 2>/dev/null || echo 0')"
@@ -721,7 +719,7 @@ async function startServer() {
         conn.exec(cmd, (err, stream) => {
           if (err) {
             conn.end();
-            return res.status(500).json({ error: err.message });
+            res.status(500).json({ error: err.message });
           }
           let output = "";
           stream.on("data", (data: Buffer) => (output += data.toString()));
@@ -1071,7 +1069,7 @@ async function startServer() {
   } else {
     const distPath = process.env.DIST_PATH || path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req: Request, res: Response) => {
+    app.get("*", (_req: Request, res: Response) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }

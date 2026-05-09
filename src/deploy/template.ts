@@ -41,11 +41,20 @@ export async function deployTemplate(params: {
   const error  = (msg: string) => safeWsSend({ type: "error",  data: msg });
 
   // ── Input Validation ──────────────────────────────────────────────────
-  const SAFE_DOMAIN  = /^[a-zA-Z0-9._-]+$/;
+  const SAFE_DOMAIN  = /^[a-zA-Z0-9.-]+$/;
   const SAFE_EMAIL   = /^[a-zA-Z0-9.@_+-]+$/;
+  const SAFE_PROFILE = /^[a-z0-9_-]+$/i;
 
-  if (!SAFE_DOMAIN.test(config.domain) || !SAFE_EMAIL.test(config.email)) {
-    error("Invalid domain or email format.");
+  if (!SAFE_DOMAIN.test(config.domain)) {
+    error(`Invalid domain format: ${config.domain}`);
+    return;
+  }
+  if (!SAFE_EMAIL.test(config.email)) {
+    error(`Invalid email format: ${config.email}`);
+    return;
+  }
+  if (!config.profiles.every(p => SAFE_PROFILE.test(p))) {
+    error("One or more selected profiles contain invalid characters.");
     return;
   }
 

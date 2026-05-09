@@ -27,10 +27,16 @@ import {
   Search,
   Sun,
   Moon,
-  Box
+  Box,
+  Cpu,
+  Zap,
+  Network,
+  ArrowDown,
+  ArrowUp,
+  HardDrive
 } from 'lucide-react';
 import { motion, AnimatePresence, useDragControls } from 'motion/react';
-import { Server, Cluster, ClusterState } from './types';
+import { Server, ClusterState } from './types';
 
 export default function App() {
   const [servers, setServers] = useState<Server[]>([]);
@@ -55,7 +61,7 @@ export default function App() {
   const [isTrafficModalOpen, setIsTrafficModalOpen] = useState(false);
   const [serverSettings, setServerSettings] = useState<Server | null>(null);
   const [loading, setLoading] = useState(true);
-  const [currentView, setCurrentView] = useState<'fleet' | 'terminals' | 'apps' | 'clusters' | 'storage' | 'settings'>('fleet');
+  const [currentView, setCurrentView] = useState<'fleet' | 'terminals' | 'apps' | 'clusters' | 'storage' | 'settings' | 'monitoring'>('fleet');
   const [deployingSample, setDeployingSample] = useState<string | null>(null);
   const [deployResult, setDeployResult] = useState<any>(null);
   const [isProdSimulationOpen, setIsProdSimulationOpen] = useState(false);
@@ -65,7 +71,7 @@ export default function App() {
   const [destroying, setDestroying] = useState<string | null>(null);
   const [deployDockerServer, setDeployDockerServer] = useState<Server | null>(null);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
-  const [templateConfig, setTemplateConfig] = useState<any>(null);
+  const [_templateConfig, _setTemplateConfig] = useState<any>(null);
 
   useEffect(() => {
     fetchServers();
@@ -99,19 +105,7 @@ export default function App() {
   };
 
   // Update cluster
-  const updateCluster = async (id: string, clusterData: Partial<ClusterState>) => {
-    try {
-      const res = await fetch(`/api/clusters/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(clusterData),
-      });
-      const updated = await res.json();
-      setClusters(clusters.map(c => c.id === id ? updated : c));
-    } catch (error) {
-      console.error('Failed to update cluster', error);
-    }
-  };
+
 
   // Delete cluster
   const deleteCluster = async (id: string) => {
@@ -618,7 +612,17 @@ export default function App() {
             setIsTemplateModalOpen={setIsTemplateModalOpen}
           />
         );
+      case 'monitoring':
+        return (
+          <MonitoringView
+            servers={servers}
+            telemetryByServerId={telemetryByServerId}
+            telemetryHistory={telemetryHistoryByServerId}
+            darkMode={darkMode}
+          />
+        );
       default:
+        return null;
     }
   };
 
@@ -661,6 +665,13 @@ export default function App() {
             active={currentView === 'apps'}
             darkMode={darkMode}
             onClick={() => setCurrentView('apps')}
+          />
+          <NavItem
+            icon={<Activity className="w-4 h-4" />}
+            label="System Monitoring"
+            active={currentView === 'monitoring'}
+            darkMode={darkMode}
+            onClick={() => setCurrentView('monitoring')}
           />
           <NavItem
             icon={<Globe className="w-4 h-4" />}
@@ -1139,7 +1150,7 @@ function ServerCard({
                 <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">LOAD (1m)</span>
                 <span className={`text-[10px] font-mono font-bold ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{history.length && typeof history[history.length - 1]?.load1 === 'number' ? history[history.length - 1].load1!.toFixed(2) : '—'}</span>
               </div>
-              <Sparkline values={history.map(p => (typeof p.load1 === 'number' ? p.load1 : null))} color="#f59e0b" height={44} normalize="auto" />
+              <Sparkline values={history.map(p => (typeof p.load1 === 'number' ? p.load1 : null))} color="#f59e0b" height={44} />
             </div>
 
             <div className={`${darkMode ? 'bg-white/5 border-white/5' : 'bg-gray-50 border-gray-100'} rounded-xl p-3 border`}>
@@ -1151,7 +1162,7 @@ function ServerCard({
                     : '—'}
                 </span>
               </div>
-              <Sparkline values={history.map(p => (typeof p.txMb === 'number' ? p.txMb : null))} color="#a855f7" height={44} normalize="auto" />
+              <Sparkline values={history.map(p => (typeof p.txMb === 'number' ? p.txMb : null))} color="#a855f7" height={44} />
             </div>
           </div>
         )}
@@ -1510,27 +1521,27 @@ function AppManagerView({
 }) {
   const [apps, setApps] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [_error, _setError] = useState<string | null>(null);
 
   const fetchApps = async () => {
     setLoading(true);
-    setError(null);
+    _setError(null);
     try {
       const allApps: any[] = [];
       for (const s of servers) {
         try {
           const res = await fetch(`/api/servers/${s.id}/containers`);
-          if (res.ok) {
-            const data = await res.json();
-            allApps.push(...data.map((a: any) => ({ ...a, serverName: s.name, serverId: s.id, serverHost: s.host })));
+          const data = await res.json();
+          if (Array.isArray(data)) {
+            allApps.push(...data.map(a => ({ ...a, serverId: s.id, serverName: s.name })));
           }
         } catch (e) {
-          console.error(`Failed to fetch apps from ${s.name}`, e);
+          console.error(e);
         }
       }
       setApps(allApps);
     } catch (e) {
-      setError(String(e));
+      _setError(String(e));
     } finally {
       setLoading(false);
     }
@@ -1774,27 +1785,15 @@ function QuickDeployModal({
   );
 }
 
-function MonitoringCard({ title, subtitle, children, darkMode = false }: { title: string; subtitle: string; children: React.ReactNode, darkMode?: boolean }) {
-  return (
-    <div className={`${darkMode ? 'bg-gray-900 border-white/5' : 'bg-white border-gray-200'} border rounded-2xl p-6 shadow-sm`}>
-      <div className="mb-4">
-        <div className={`font-bold ${darkMode ? 'text-white' : 'text-gray-800'}`}>{title}</div>
-        <div className="text-[11px] text-gray-400 font-medium">{subtitle}</div>
-      </div>
-      {children}
-    </div>
-  );
-}
+
 
 function Sparkline({
   values,
   color,
-  normalize,
   height = 80,
 }: {
   values: Array<number | null>;
   color: string;
-  normalize?: 'auto';
   height?: number;
 }) {
   const width = 360;
@@ -2383,7 +2382,7 @@ function CreateClusterModal({ servers, onCreate, onClose, darkMode = false }: { 
   );
 }
 
-function ProdSimulationOverlay({ cluster, darkMode = false, onClose }: { cluster: ClusterState, darkMode?: boolean, onClose: () => void }) {
+function ProdSimulationOverlay({ cluster, darkMode: _darkMode = false, onClose }: { cluster: ClusterState, darkMode?: boolean, onClose: () => void }) {
   const [activeTab, setActiveTab] = useState<'topology' | 'logs' | 'metrics'>('topology');
   const [simulatedLoad, setSimulatedLoad] = useState(0);
 
@@ -3035,3 +3034,305 @@ function DeployTemplateModal({ servers, darkMode = false, onClose, onStart }: { 
     </motion.div>
   );
 }
+
+function MonitoringView({
+  servers,
+  telemetryByServerId,
+  telemetryHistory,
+  darkMode = false
+}: {
+  servers: Server[],
+  telemetryByServerId: Record<string, any>,
+  telemetryHistory: Record<string, Array<{ ts: number; cpu?: number; ram?: number; load1?: number; rxMb?: number; txMb?: number }>>,
+  darkMode?: boolean
+}) {
+  const [filter, setFilter] = useState('');
+  
+  const filteredServers = servers.filter(s => 
+    s.name.toLowerCase().includes(filter.toLowerCase()) || 
+    s.host.toLowerCase().includes(filter.toLowerCase())
+  );
+
+  // Compute aggregate stats
+  const activeServers = servers.filter(s => telemetryHistory[s.id]?.length > 0);
+  const avgCpu = activeServers.length 
+    ? (activeServers.reduce((acc, s) => acc + (telemetryHistory[s.id]?.slice(-1)[0]?.cpu || 0), 0) / activeServers.length).toFixed(1)
+    : '0';
+  const avgRam = activeServers.length
+    ? (activeServers.reduce((acc, s) => acc + (telemetryHistory[s.id]?.slice(-1)[0]?.ram || 0), 0) / activeServers.length).toFixed(1)
+    : '0';
+
+  return (
+    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700 h-full overflow-y-auto pr-2 pb-12">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h2 className={`text-3xl font-black tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>Fleet Intelligence</h2>
+          <p className="text-slate-500 font-medium mt-1">Real-time system telemetry and resource utilization</p>
+        </div>
+        <div className="flex items-center gap-3">
+           <div className={`relative flex-1 md:w-64 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 opacity-50" />
+            <input
+              type="text"
+              placeholder="Filter fleet..."
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              className={`w-full pl-10 pr-4 py-2.5 rounded-xl border text-sm font-medium transition-all outline-none ${
+                darkMode 
+                  ? 'bg-white/5 border-white/5 focus:bg-white/10 focus:border-blue-500/50' 
+                  : 'bg-white border-slate-200 focus:border-blue-500 focus:shadow-lg focus:shadow-blue-500/5'
+              }`}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Aggregate Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <StatSummaryCard
+          icon={<Cpu className="w-5 h-5" />}
+          label="Avg CPU Load"
+          value={`${avgCpu}%`}
+          color="blue"
+          darkMode={darkMode}
+        />
+        <StatSummaryCard
+          icon={<Zap className="w-5 h-5" />}
+          label="Avg Memory"
+          value={`${avgRam}%`}
+          color="emerald"
+          darkMode={darkMode}
+        />
+        <StatSummaryCard
+          icon={<Network className="w-5 h-5" />}
+          label="Active Nodes"
+          value={activeServers.length.toString()}
+          color="purple"
+          darkMode={darkMode}
+        />
+        <StatSummaryCard
+          icon={<Database className="w-5 h-5" />}
+          label="Total Servers"
+          value={servers.length.toString()}
+          color="amber"
+          darkMode={darkMode}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 pb-20">
+        {filteredServers.map(server => (
+          <MonitoringServerCard
+            key={server.id}
+            server={{ ...server, telemetry: telemetryByServerId[server.id] }}
+            history={telemetryHistory[server.id] || []}
+            darkMode={darkMode}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StatSummaryCard({ icon, label, value, color, darkMode }: { icon: React.ReactNode, label: string, value: string, color: string, darkMode: boolean }) {
+  const colorClasses: Record<string, string> = {
+    blue: darkMode ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' : 'bg-blue-50 text-blue-600 border-blue-100',
+    emerald: darkMode ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-emerald-50 text-emerald-600 border-emerald-100',
+    purple: darkMode ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : 'bg-purple-50 text-purple-600 border-purple-100',
+    amber: darkMode ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : 'bg-amber-50 text-amber-600 border-amber-100',
+  };
+
+  return (
+    <div className={`${darkMode ? 'bg-gray-900 border-white/5' : 'bg-white border-gray-200'} border rounded-2xl p-5 shadow-sm`}>
+      <div className="flex items-center gap-3 mb-3">
+        <div className={`p-2.5 rounded-xl border ${colorClasses[color]}`}>
+          {icon}
+        </div>
+        <span className="text-xs font-bold uppercase tracking-widest text-gray-400">{label}</span>
+      </div>
+      <div className={`text-2xl font-black ${darkMode ? 'text-white' : 'text-slate-900'}`}>{value}</div>
+    </div>
+  );
+}
+
+function MonitoringServerCard({ server, history, darkMode }: { server: Server, history: any[], darkMode: boolean }) {
+  const latest = history.slice(-1)[0] || {};
+  
+  return (
+    <motion.div
+      layout
+      className={`${darkMode ? 'bg-gray-900 border-white/5' : 'bg-white border-gray-200'} border rounded-3xl p-6 shadow-sm hover:shadow-xl hover:border-blue-500/50 transition-all duration-300`}
+    >
+      <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center gap-4">
+          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center border shadow-sm ${
+            server.status === 'online' 
+              ? (darkMode ? 'bg-blue-600/20 border-blue-500/20 text-blue-400' : 'bg-blue-50 border-blue-100 text-blue-600')
+              : (darkMode ? 'bg-white/5 border-white/5 text-gray-600' : 'bg-gray-50 border-gray-100 text-gray-400')
+          }`}>
+            <ServerIcon className="w-6 h-6" />
+          </div>
+          <div>
+            <h3 className={`text-lg font-black tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>{server.name}</h3>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className={`w-2 h-2 rounded-full ${server.status === 'online' ? 'bg-emerald-500' : 'bg-gray-300'} animate-pulse`} />
+              <p className="text-xs text-gray-400 font-mono tracking-tight lowercase">{server.username}@{server.host}</p>
+            </div>
+          </div>
+        </div>
+        <div className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border ${
+          server.status === 'online'
+            ? (darkMode ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-emerald-50 text-emerald-600 border-emerald-100')
+            : (darkMode ? 'bg-white/5 text-gray-500 border-white/5' : 'bg-gray-50 text-gray-400 border-gray-100')
+        }`}>
+          {server.status === 'online' ? 'Connected' : 'Offline'}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* CPU & Load Section */}
+        <div className="space-y-6">
+          <div className={`${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-100'} rounded-2xl p-5 border relative overflow-hidden`}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Cpu className="w-4 h-4 text-blue-500" />
+                <span className="text-xs font-bold uppercase tracking-widest text-gray-400">Processor usage</span>
+              </div>
+              <span className={`text-xl font-black font-mono ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                {latest.cpu !== undefined ? `${latest.cpu}%` : '--'}
+              </span>
+            </div>
+            <div className="h-2 w-full bg-gray-200/50 rounded-full mb-4 overflow-hidden">
+              <motion.div 
+                initial={{ width: 0 }}
+                animate={{ width: `${latest.cpu || 0}%` }}
+                className="h-full bg-blue-500 rounded-full" 
+              />
+            </div>
+            <Sparkline values={history.map(p => p.cpu || null)} color="#3b82f6" height={60} />
+          </div>
+
+          <div className={`${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-100'} rounded-2xl p-5 border`}>
+            <div className="flex items-center gap-2 mb-4">
+              <Activity className="w-4 h-4 text-amber-500" />
+              <span className="text-xs font-bold uppercase tracking-widest text-gray-400">Load Averages</span>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <LoadBox label="1m" value={latest.load1} darkMode={darkMode} />
+              <LoadBox label="5m" value={latest.load5 || latest.load1} darkMode={darkMode} />
+              <LoadBox label="15m" value={latest.load15 || latest.load1} darkMode={darkMode} />
+            </div>
+          </div>
+        </div>
+
+        {/* Memory & Network Section */}
+        <div className="space-y-6">
+          <div className={`${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-100'} rounded-2xl p-5 border`}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Zap className="w-4 h-4 text-emerald-500" />
+                <span className="text-xs font-bold uppercase tracking-widest text-gray-400">Memory Pressure</span>
+              </div>
+              <span className={`text-xl font-black font-mono ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                {latest.ram !== undefined ? `${latest.ram}%` : '--'}
+              </span>
+            </div>
+            <div className="h-2 w-full bg-gray-200/50 rounded-full mb-4 overflow-hidden">
+              <motion.div 
+                initial={{ width: 0 }}
+                animate={{ width: `${latest.ram || 0}%` }}
+                className="h-full bg-emerald-500 rounded-full" 
+              />
+            </div>
+            <Sparkline values={history.map(p => p.ram || null)} color="#10b981" height={60} />
+          </div>
+
+          <div className={`${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-100'} rounded-2xl p-5 border`}>
+             <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Network className="w-4 h-4 text-purple-500" />
+                <span className="text-xs font-bold uppercase tracking-widest text-gray-400">Network Throughput</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1">
+                  <ArrowDown className="w-3 h-3 text-emerald-500" />
+                  <span className="text-[10px] font-bold font-mono text-gray-500">{latest.rxMb?.toFixed(1) || '0.0'} MB/s</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <ArrowUp className="w-3 h-3 text-blue-500" />
+                  <span className="text-[10px] font-bold font-mono text-gray-500">{latest.txMb?.toFixed(1) || '0.0'} MB/s</span>
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+               <div>
+                 <span className="text-[9px] uppercase tracking-tighter text-gray-400 font-bold block mb-1">Upload</span>
+                 <Sparkline values={history.map(p => p.txMb || null)} color="#3b82f6" height={40} />
+               </div>
+               <div>
+                 <span className="text-[9px] uppercase tracking-tighter text-gray-400 font-bold block mb-1">Download</span>
+                 <Sparkline values={history.map(p => p.rxMb || null)} color="#10b981" height={40} />
+               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className={`p-4 rounded-2xl border ${darkMode ? 'bg-white/5 border-white/5' : 'bg-gray-50 border-gray-100'}`}>
+          <div className="flex items-center gap-2 mb-2">
+            <HardDrive className="w-4 h-4 text-slate-400" />
+            <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Primary Disk Usage</span>
+          </div>
+          <div className="flex items-end justify-between">
+            <span className={`text-lg font-black ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+              {server.telemetry?.disk || 'Checking...'}
+            </span>
+            <span className="text-[10px] text-gray-400 font-medium">Mount: /</span>
+          </div>
+        </div>
+        
+        <div className={`p-4 rounded-2xl border ${darkMode ? 'bg-white/5 border-white/5' : 'bg-gray-50 border-gray-100'}`}>
+          <div className="flex items-center gap-2 mb-2">
+             <Shield className="w-4 h-4 text-blue-400" />
+            <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Docker Engine</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className={`text-[10px] font-black uppercase ${server.telemetry?.docker && server.telemetry.docker !== 'none' ? 'text-blue-500' : 'text-gray-400'}`}>
+              {server.telemetry?.docker && server.telemetry.docker !== 'none' ? 'Operational' : 'Missing'}
+            </span>
+            <div className={`w-2 h-2 rounded-full ${server.telemetry?.docker && server.telemetry.docker !== 'none' ? 'bg-blue-500' : 'bg-gray-300'}`} />
+          </div>
+        </div>
+
+        <div className={`p-4 rounded-2xl border ${darkMode ? 'bg-white/5 border-white/5' : 'bg-gray-50 border-gray-100'}`}>
+          <div className="flex items-center gap-2 mb-2">
+             <RefreshCw className="w-4 h-4 text-emerald-400" />
+            <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Telemetry Sync</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black text-emerald-500 uppercase">Live (10s)</span>
+            <motion.div 
+              animate={{ opacity: [0.3, 1, 0.3] }}
+              transition={{ repeat: Infinity, duration: 2 }}
+              className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" 
+            />
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+function LoadBox({ label, value, darkMode }: { label: string, value: number | undefined, darkMode: boolean }) {
+  return (
+    <div className={`p-3 rounded-xl border flex flex-col items-center justify-center transition-colors ${
+      darkMode ? 'bg-white/5 border-white/5' : 'bg-white border-slate-200'
+    }`}>
+      <span className="text-[9px] font-bold text-gray-400 uppercase tracking-tighter mb-1">{label}</span>
+      <span className={`text-sm font-black font-mono ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+        {value !== undefined ? value.toFixed(2) : '--'}
+      </span>
+    </div>
+  );
+}
+
