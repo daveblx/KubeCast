@@ -125,6 +125,9 @@ export async function deployTemplate(params: {
       `    exit(0)`,
       `with open(path, 'r') as f: content = f.read()`,
       ``,
+      `# 0. Upgrade log level to DEBUG so ACME progress is visible in docker logs`,
+      `content = content.replace('"--log.level=INFO"', '"--log.level=DEBUG"', 1)`,
+      ``,
       `# 1. Remove Cloudflare env vars`,
       `content = re.sub(r'^\\s*-\\s*CF_API_EMAIL=.*$\\n?', '', content, flags=re.M)`,
       `content = re.sub(r'^\\s*-\\s*CF_DNS_API_TOKEN=.*$\\n?', '', content, flags=re.M)`,
@@ -143,20 +146,32 @@ export async function deployTemplate(params: {
       `else:`,
       `    content = content.replace('delaybeforecheck=120', 'delaybeforecheck=180', 1)`,
       ``,
-      `# 5. Add wildcard domain labels for a single cert covering *.domain`,
+      `# 5. Add wildcard + apex SAN labels so LE issues a cert for BOTH *.domain AND domain`,
+      `# The apex SAN is required; without it curl returns "unable to get local issuer certificate"`,
       `if 'tls.domains[0]' not in content:`,
-      `    content = content.replace('"traefik.http.routers.api.tls.certresolver=letsencrypt"', '"traefik.http.routers.api.tls.certresolver=letsencrypt"' + chr(10) + '      - "traefik.http.routers.api.tls.domains[0].main=*.' + '\${DOMAIN}"', 1)`,
+      `    content = content.replace('"traefik.http.routers.api.tls.certresolver=letsencrypt"',`,
+      `        '"traefik.http.routers.api.tls.certresolver=letsencrypt"' + chr(10)`,
+      `        + '      - "traefik.http.routers.api.tls.domains[0].main=*.' + '\${DOMAIN}"' + chr(10)`,
+      `        + '      - "traefik.http.routers.api.tls.domains[0].sans=' + '\${DOMAIN}"', 1)`,
       ``,
       `# 6. Add external DNS resolvers to avoid internal DNS caching issues`,
       `if 'dnschallenge.resolvers' not in content:`,
       `    content = content.replace('"--certificatesresolvers.letsencrypt.acme.dnschallenge.delaybeforecheck=180"', '"--certificatesresolvers.letsencrypt.acme.dnschallenge.delaybeforecheck=180"' + chr(10) + '      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53"', 1)`,
       ``,
+      `# 7. Enable dynamic config file provider so we can set the default TLS store via YAML.`,
+      `# --tls.stores.* are NOT valid CLI flags in Traefik v3; they must be in a dynamic config file.`,
+      `if 'providers.file.filename' not in content:`,
+      `    content = content.replace('"--certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53"',`,
+      `        '"--certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53"' + chr(10)`,
+      `        + '      - "--providers.file.filename=/data/dynamic.yml"', 1)`,
+      ``,
       `with open(path, 'w') as f: f.write(content)`,
       `print('Traefik patch applied.')`,
     ].join('\n');
 
-    // Second script: strip tls.certresolver from all non-Traefik app services
-    // so Traefik only challenges the wildcard, not every subdomain individually
+    // Second script: replace tls.certresolver with tls=true for all non-Traefik app services.
+    // This tells Traefik to use TLS but follow the default store's certificate (our wildcard)
+    // instead of trying to generate a new cert per-service which can cause collisions or timeouts.
     const stripResolverScript = [
       `import os, re`,
       `apps_dir = 'apps'`,
@@ -168,12 +183,13 @@ export async function deployTemplate(params: {
       `            continue`,
       `        fpath = os.path.join(root, fname)`,
       `        with open(fpath, 'r') as f: content = f.read()`,
-      `        # Remove any tls.certresolver label from non-Traefik services`,
-      `        new_content = re.sub(r'^\\s*-\\s*"traefik\\.http\\.routers\\.[^.]+\\.tls\\.certresolver=.*"\\s*$\\n?', '', content, flags=re.M)`,
+      `        # Replace certresolver label with simple tls=true so they use the wildcard from the default store.`,
+      `        # This regex is careful not to consume the closing quote or other surrounding characters.`,
+      `        new_content = re.sub(r'(traefik\\\\.http\\\\.routers\\\\.[^.]+\\\\.tls)\\\\.certresolver=[^"\\\'\\\\s]+', r'\\\\1=true', content)`,
       `        if new_content != content:`,
       `            with open(fpath, 'w') as f: f.write(new_content)`,
-      `            print('Stripped certresolver from ' + fpath)`,
-      `print('Service label cleanup complete.')`,
+      `            print('Updated TLS config for ' + fpath)`,
+      `print('Service label update complete.')`,
     ].join('\n');
 
     const patchBase64 = Buffer.from(pythonPatchScript).toString('base64');
@@ -197,12 +213,64 @@ export async function deployTemplate(params: {
 
     
     if (!(await execCommand(cloneAndPatch, "Clone and Patch"))) return;
+ 
+    // ── Step 2c: Configure Authelia Notifier (No SMTP) ──────────────────
+    status("Configuring Authelia Notifier...");
+    const autheliaPatch = [
+      `import os, re`,
+      `path = '/opt/docker/data/authelia/config/configuration.yml'`,
+      `os.makedirs(os.path.dirname(path), exist_ok=True)`,
+      `if not os.path.exists(path) and os.path.exists('/opt/docker/apps/authelia/configuration.yml'):`,
+      `    import shutil`,
+      `    shutil.copy('/opt/docker/apps/authelia/configuration.yml', path)`,
+      `if os.path.exists(path):`,
+      `    with open(path, 'r') as f: content = f.read()`,
+      `    # Replace SMTP block with File notifier block`,
+      `    pattern = r'notifier:\\s+smtp:.*?(\\n\\S|$)'`,
+      `    replacement = 'notifier:\\n  file:\\n    path: /config/notification.txt\\n\\\\\\\\1'`,
+      `    if 'notifier:' in content:`,
+      `        if 'smtp:' in content:`,
+      `            content = re.sub(pattern, replacement, content, flags=re.S)`,
+      `        elif 'file:' not in content:`,
+      `            content = content.replace('notifier:', 'notifier:\\n  file:\\n    path: /config/notification.txt', 1)`,
+      `    else:`,
+      `        content += \"\\nnotifier:\\n  file:\\n    path: /config/notification.txt\\n\"`,
+      `    with open(path, 'w') as f: f.write(content)`,
+      `    print('Authelia notifier set to file.')`,
+    ].join('\n');
+    const autheliaBase64 = Buffer.from(autheliaPatch).toString('base64');
+    await execCommand(
+      `echo "${autheliaBase64}" | base64 -d > /tmp/patch_authelia.py && python3 /tmp/patch_authelia.py && rm -f /tmp/patch_authelia.py`,
+      "Patch Authelia Notifier"
+    );
 
-    // ── Step 2b: Reset acme.json for a fresh cert request ───────────────
-    status("Resetting acme.json...");
+    // ── Step 2b: Reset acme.json + write dynamic.yml ─────────────────────
+    status("Resetting acme.json and writing Traefik dynamic config...");
     await execCommand(
       `mkdir -p /opt/docker/data/traefik && rm -f /opt/docker/data/traefik/acme.json && touch /opt/docker/data/traefik/acme.json && chmod 600 /opt/docker/data/traefik/acme.json`,
       "Reset acme.json"
+    );
+
+    // Write the dynamic.yml that configures Traefik's default TLS store to serve the wildcard cert.
+    // --tls.stores.* are dynamic-config-only in Traefik v3 (not valid CLI flags).
+    // The defaultGeneratedCert block tells Traefik: use the letsencrypt resolver to obtain
+    // *.domain + domain, and serve this wildcard as the default cert for ALL routers.
+    // This eliminates the self-signed fallback for any service that has tls=true but no certresolver.
+    const dynamicConfig = [
+      `tls:`,
+      `  stores:`,
+      `    default:`,
+      `      defaultGeneratedCert:`,
+      `        resolver: letsencrypt`,
+      `        domain:`,
+      `          main: "*.${config.domain}"`,
+      `          sans:`,
+      `            - "${config.domain}"`,
+    ].join("\n");
+    const dynamicBase64 = Buffer.from(dynamicConfig).toString("base64");
+    await execCommand(
+      `echo "${dynamicBase64}" | base64 -d > /opt/docker/data/traefik/dynamic.yml`,
+      "Write Traefik dynamic.yml"
     );
 
     // ── Step 3: Write .env ─────────────────────────────────────────────
@@ -230,6 +298,9 @@ export async function deployTemplate(params: {
       `COMPOSE_PROJECT_NAME=aio`,
       `COMPOSE_FILE=compose.yaml`,
       `DUCKDNS_TOKEN=${config.duckdnsToken || ''}`,
+      `LE_CA_SERVER=https://acme-v02.api.letsencrypt.org/directory`,
+      `TRUSTED_IPS=0.0.0.0/0,::/0`,
+      `DOCKER_NETWORK_EXTERNAL=false`,
       `AUTHELIA_SESSION_SECRET=${sessionSecret}`,
       `AUTHELIA_STORAGE_ENCRYPTION_KEY=${storageKey}`,
       `AUTHELIA_JWT_SECRET=${jwtSecret}`,
@@ -328,10 +399,12 @@ export async function deployTemplate(params: {
       `TRAEFIK_HOSTNAME=traefik.${config.domain}`,
       `UPTIME_KUMA_HOSTNAME=status.${config.domain}`,
       `USENET_STREAMER_HOSTNAME=usenet-streamer.${config.domain}`,
+      `USENET_ULTIMATE_HOSTNAME=usenet-ultimate.${config.domain}`,
       `VAULTWARDEN_HOSTNAME=vaultwarden.${config.domain}`,
       `WALLOS_HOSTNAME=wallos.${config.domain}`,
       `WEBSTREAMR_HOSTNAME=webstreamr.${config.domain}`,
       `WUD_HOSTNAME=wud.${config.domain}`,
+      `XRDB_HOSTNAME=xrdb.${config.domain}`,
       `YAMTRACK_HOSTNAME=yamtrack.${config.domain}`,
       `ZILEAN_HOSTNAME=zilean.${config.domain}`,
       `ZIPLINE_HOSTNAME=zipline.${config.domain}`,
