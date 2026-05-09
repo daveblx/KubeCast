@@ -31,6 +31,11 @@ export class TemplateConfigValidator {
       throw new Error(`Invalid email format: ${cfg.email}`);
     }
 
+    // Validate duckdnsToken
+    if (cfg.duckdnsToken && typeof cfg.duckdnsToken !== 'string') {
+      throw new Error('Config.duckdnsToken must be a string');
+    }
+
     // Validate profiles
     if (!Array.isArray(cfg.profiles) || cfg.profiles.length === 0) {
       throw new Error('Config.profiles must be a non-empty array of strings');

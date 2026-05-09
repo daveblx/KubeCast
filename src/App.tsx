@@ -2972,6 +2972,13 @@ function DeployTemplateModal({ servers, darkMode = false, onClose, onStart }: { 
                 onChange={e => setConfig({ ...config, email: e.target.value })}
                 placeholder="admin@yourdomain.com"
               />
+              <Input
+                label="DuckDNS Token"
+                value={config.duckdnsToken || ''}
+                darkMode={darkMode}
+                onChange={e => setConfig({ ...config, duckdnsToken: e.target.value })}
+                placeholder="Your DuckDNS API Token"
+              />
             </div>
 
             <div className="space-y-4">

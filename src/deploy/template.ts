@@ -6,6 +6,7 @@ import { TemplateConfigValidator, EnvironmentValidator } from './template.valida
 export interface TemplateConfig {
   domain: string;
   email: string;
+  duckdnsToken?: string;
   profiles: string[];
   cloudflare?: {
     apiToken: string;
@@ -46,6 +47,15 @@ export async function deployTemplate(params: {
   if (!SAFE_DOMAIN.test(config.domain) || !SAFE_EMAIL.test(config.email)) {
     error("Invalid domain or email format.");
     return;
+  }
+
+  // DuckDNS validation: Ensure subdomain format if using duckdns.org
+  if (config.domain.endsWith("duckdns.org")) {
+    const parts = config.domain.split('.');
+    if (parts.length < 3) {
+      error("For DuckDNS, domain must be in the format 'subdomain.duckdns.org'");
+      return;
+    }
   }
 
   // ── Secret Sanitisers ─────────────────────────────────────────────────
@@ -107,10 +117,93 @@ export async function deployTemplate(params: {
 
     // ── Step 2: Clone and Apply Nuclear Patch ───────────────────────────
     status("Cloning and Patching Template...");
-    // Using a single string command to avoid shell escaping issues in the Patch
-    const cloneAndPatch = `cd /opt/docker && git clone --depth 1 https://github.com/Viren070/docker-compose-template.git . && echo "Neuterizing YAMLs" && find . -type f \\( -name "*.yaml" -o -name "*.yml" \\) -exec sed -i 's/:?error/:-/g' {} + && find . -type f \\( -name "*.yaml" -o -name "*.yml" \\) -exec sed -i 's/:?err/:-/g' {} + && mkdir -p data/authelia apps && chown -R 1000:1000 /opt/docker`;
+    // Build the Python patch script and encode it for safe transfer
+    const pythonPatchScript = [
+      `import os, re`,
+      `path = 'apps/traefik/compose.yaml'`,
+      `if not os.path.exists(path):`,
+      `    exit(0)`,
+      `with open(path, 'r') as f: content = f.read()`,
+      ``,
+      `# 1. Remove Cloudflare env vars`,
+      `content = re.sub(r'^\\s*-\\s*CF_API_EMAIL=.*$\\n?', '', content, flags=re.M)`,
+      `content = re.sub(r'^\\s*-\\s*CF_DNS_API_TOKEN=.*$\\n?', '', content, flags=re.M)`,
+      ``,
+      `# 2. Add DUCKDNS_TOKEN to environment block`,
+      `if 'DUCKDNS_TOKEN' not in content:`,
+      `    content = content.replace('environment:', 'environment:' + chr(10) + '      - DUCKDNS_TOKEN=\${DUCKDNS_TOKEN}', 1)`,
+      ``,
+      `# 3. Replace TLS challenge with DuckDNS DNS-01 provider`,
+      `content = content.replace('"--certificatesresolvers.letsencrypt.acme.tlschallenge=true"', '"--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=duckdns"', 1)`,
+      `content = content.replace('"--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare"', '"--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=duckdns"', 1)`,
+      ``,
+      `# 4. Add delaybeforecheck=180 as its own distinct command entry`,
+      `if 'delaybeforecheck' not in content:`,
+      `    content = content.replace('"--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=duckdns"', '"--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=duckdns"' + chr(10) + '      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.delaybeforecheck=180"', 1)`,
+      `else:`,
+      `    content = content.replace('delaybeforecheck=120', 'delaybeforecheck=180', 1)`,
+      ``,
+      `# 5. Add wildcard domain labels for a single cert covering *.domain`,
+      `if 'tls.domains[0]' not in content:`,
+      `    content = content.replace('"traefik.http.routers.api.tls.certresolver=letsencrypt"', '"traefik.http.routers.api.tls.certresolver=letsencrypt"' + chr(10) + '      - "traefik.http.routers.api.tls.domains[0].main=*.' + '\${DOMAIN}"', 1)`,
+      ``,
+      `# 6. Add external DNS resolvers to avoid internal DNS caching issues`,
+      `if 'dnschallenge.resolvers' not in content:`,
+      `    content = content.replace('"--certificatesresolvers.letsencrypt.acme.dnschallenge.delaybeforecheck=180"', '"--certificatesresolvers.letsencrypt.acme.dnschallenge.delaybeforecheck=180"' + chr(10) + '      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53"', 1)`,
+      ``,
+      `with open(path, 'w') as f: f.write(content)`,
+      `print('Traefik patch applied.')`,
+    ].join('\n');
+
+    // Second script: strip tls.certresolver from all non-Traefik app services
+    // so Traefik only challenges the wildcard, not every subdomain individually
+    const stripResolverScript = [
+      `import os, re`,
+      `apps_dir = 'apps'`,
+      `for root, dirs, files in os.walk(apps_dir):`,
+      `    if 'traefik' in root:`,
+      `        continue`,
+      `    for fname in files:`,
+      `        if not fname.endswith('.yaml') and not fname.endswith('.yml'):`,
+      `            continue`,
+      `        fpath = os.path.join(root, fname)`,
+      `        with open(fpath, 'r') as f: content = f.read()`,
+      `        # Remove any tls.certresolver label from non-Traefik services`,
+      `        new_content = re.sub(r'^\\s*-\\s*"traefik\\.http\\.routers\\.[^.]+\\.tls\\.certresolver=.*"\\s*$\\n?', '', content, flags=re.M)`,
+      `        if new_content != content:`,
+      `            with open(fpath, 'w') as f: f.write(new_content)`,
+      `            print('Stripped certresolver from ' + fpath)`,
+      `print('Service label cleanup complete.')`,
+    ].join('\n');
+
+    const patchBase64 = Buffer.from(pythonPatchScript).toString('base64');
+    const stripBase64 = Buffer.from(stripResolverScript).toString('base64');
+
+    const cloneAndPatch = [
+      `cd /opt/docker`,
+      `git clone --depth 1 https://github.com/Viren070/docker-compose-template.git .`,
+      `echo "${patchBase64}" | base64 -d > /tmp/patch_traefik.py`,
+      `python3 /tmp/patch_traefik.py`,
+      `rm -f /tmp/patch_traefik.py`,
+      `echo "${stripBase64}" | base64 -d > /tmp/strip_resolver.py`,
+      `python3 /tmp/strip_resolver.py`,
+      `rm -f /tmp/strip_resolver.py`,
+      `echo "Neuterizing YAMLs"`,
+      `find . -type f \\( -name "*.yaml" -o -name "*.yml" \\) -exec sed -i 's/:?error/:-/g' {} +`,
+      `find . -type f \\( -name "*.yaml" -o -name "*.yml" \\) -exec sed -i 's/:?err/:-/g' {} +`,
+      `mkdir -p data/authelia apps`,
+      `chown -R 1000:1000 /opt/docker`,
+    ].join(' && ');
+
     
     if (!(await execCommand(cloneAndPatch, "Clone and Patch"))) return;
+
+    // ── Step 2b: Reset acme.json for a fresh cert request ───────────────
+    status("Resetting acme.json...");
+    await execCommand(
+      `mkdir -p /opt/docker/data/traefik && rm -f /opt/docker/data/traefik/acme.json && touch /opt/docker/data/traefik/acme.json && chmod 600 /opt/docker/data/traefik/acme.json`,
+      "Reset acme.json"
+    );
 
     // ── Step 3: Write .env ─────────────────────────────────────────────
     status("Writing root .env...");
@@ -136,8 +229,7 @@ export async function deployTemplate(params: {
       `COMPOSE_PROFILES=${config.profiles.join(",")}`,
       `COMPOSE_PROJECT_NAME=aio`,
       `COMPOSE_FILE=compose.yaml`,
-      `CLOUDFLARE_API_TOKEN=${config.cloudflare?.apiToken || ''}`,
-      `CLOUDFLARE_ZONE_ID=${config.cloudflare?.zoneId || ''}`,
+      `DUCKDNS_TOKEN=${config.duckdnsToken || ''}`,
       `AUTHELIA_SESSION_SECRET=${sessionSecret}`,
       `AUTHELIA_STORAGE_ENCRYPTION_KEY=${storageKey}`,
       `AUTHELIA_JWT_SECRET=${jwtSecret}`,
