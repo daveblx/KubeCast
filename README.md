@@ -13,7 +13,7 @@ This repository provides a streamlined approach to installing and deploying Dock
 - Prod Test: Checks if everything on the sever is up and running and gives back a system report.
 - Nuke Server: Get rid of all KubeCast related content on a server.
 
-![Description](screenshots/control_plane.png)
+![Description](screenshots/control_plane.PNG)
   
 ## Tech Stack
 - Runtime: Docker
