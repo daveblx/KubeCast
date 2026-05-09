@@ -141,6 +141,7 @@ async function startServer() {
     const config: TemplateConfig = {
       domain: "",
       email: "",
+      duckdnsToken: "",
       profiles: ["required"],
       authelia: {
         jwtSecret: crypto.randomBytes(32).toString("hex"),
