@@ -2973,11 +2973,25 @@ function DeployTemplateModal({ servers, darkMode = false, onClose, onStart }: { 
                 placeholder="admin@yourdomain.com"
               />
               <Input
-                label="DuckDNS Token"
-                value={config.duckdnsToken || ''}
+                label="Cloudflare API Token"
+                value={config.cloudflare?.apiToken || ''}
                 darkMode={darkMode}
-                onChange={e => setConfig({ ...config, duckdnsToken: e.target.value })}
-                placeholder="Your DuckDNS API Token"
+                onChange={e => setConfig({
+                  ...config,
+                  cloudflare: { ...(config.cloudflare || { zoneId: '' }), apiToken: e.target.value }
+                })}
+                placeholder="Your Cloudflare API Token"
+                type="password"
+              />
+              <Input
+                label="Cloudflare Zone ID"
+                value={config.cloudflare?.zoneId || ''}
+                darkMode={darkMode}
+                onChange={e => setConfig({
+                  ...config,
+                  cloudflare: { ...(config.cloudflare || { apiToken: '' }), zoneId: e.target.value }
+                })}
+                placeholder="Your Cloudflare Zone ID"
               />
             </div>
 

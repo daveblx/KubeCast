@@ -31,7 +31,7 @@ export class TemplateConfigValidator {
       throw new Error(`Invalid email format: ${cfg.email}`);
     }
 
-    // Validate duckdnsToken
+    // Validate optional duckdnsToken (deprecated but kept for compatibility)
     if (cfg.duckdnsToken && typeof cfg.duckdnsToken !== 'string') {
       throw new Error('Config.duckdnsToken must be a string');
     }
