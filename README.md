@@ -1,6 +1,9 @@
 # Server Deployment: Docker & Kubernetes
 This repository provides a streamlined approach to installing and deploying Docker and Kubernetes on a server environment. The project focuses on transitioning a machine into a lean, headless node capable of managing containerized workloads via SSH.
 
+![Description](screenshots/logo.png)
+
+
 ## Key Features
 - Automated Runtime Setup: Simplifies the installation of the Docker Engine.
 - Cluster Orchestration: Configures Kubernetes components for immediate cluster initialization.
