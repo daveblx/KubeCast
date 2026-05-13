@@ -1480,7 +1480,18 @@ function TerminalOverlay({
           className="flex-1 p-6 font-mono text-[13px] overflow-y-auto terminal-scrollbar whitespace-pre-wrap leading-relaxed selection:bg-blue-500/40 text-gray-300"
         >
           {logs.map((log, i) => (
-            <div key={i} dangerouslySetInnerHTML={{ __html: log.replace(/ /g, '&nbsp;') }} />
+            <div 
+              key={i} 
+              dangerouslySetInnerHTML={{ 
+                __html: log
+                  .replace(/&/g, '&amp;')
+                  .replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;')
+                  .replace(/"/g, '&quot;')
+                  .replace(/'/g, '&#39;')
+                  .replace(/ /g, '&nbsp;') 
+              }} 
+            />
           ))}
           <form onSubmit={handleSend} className="inline-flex items-center w-full mt-2">
             <span className="text-blue-400 mr-2 font-bold">❯</span>

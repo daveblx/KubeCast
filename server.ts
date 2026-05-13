@@ -70,6 +70,10 @@ function safePosixPath(userInput: string, username: string): string | null {
   return null;
 }
 
+function shellEscape(arg: string): string {
+  return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
 function getServerSSHConfig(server: any) {
   const config: any = {
     host: server.host,
@@ -359,7 +363,7 @@ async function startServer() {
     conn
       .on("ready", () => {
         const remoteDockerfile = `${workDir}/Dockerfile`;
-        const setupCmd = `mkdir -p ${workDir} && cat > ${remoteDockerfile}`;
+        const setupCmd = `mkdir -p ${shellEscape(workDir)} && cat > ${shellEscape(remoteDockerfile)}`;
         
         conn.exec(setupCmd, (err, stream) => {
           if (err) {
@@ -378,10 +382,10 @@ async function startServer() {
             }
 
             const buildAndRun = [
-              `docker build -t ${safeContainerName} ${workDir}`,
-              `docker rm -f ${safeContainerName} 2>/dev/null || true`,
-              `docker run -d --name ${safeContainerName} ${safePortFlag} ${safeContainerName}`,
-              `rm -rf ${workDir}`
+              `docker build -t ${shellEscape(safeContainerName)} ${shellEscape(workDir)}`,
+              `docker rm -f ${shellEscape(safeContainerName)} 2>/dev/null || true`,
+              `docker run -d --name ${shellEscape(safeContainerName)} ${safePortFlag} ${shellEscape(safeContainerName)}`,
+              `rm -rf ${shellEscape(workDir)}`
             ].join(" && ");
 
             conn.exec("sudo -S -p '' bash -s", (execErr, execStream) => {

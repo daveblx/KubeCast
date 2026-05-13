@@ -59,7 +59,7 @@ export async function deployTemplate(params: {
   }
 
   // DuckDNS validation: Ensure subdomain format if using duckdns.org
-  if (config.domain.endsWith("duckdns.org")) {
+  if (config.domain === "duckdns.org" || config.domain.endsWith(".duckdns.org")) {
     const parts = config.domain.split('.');
     if (parts.length < 3) {
       error("For DuckDNS, domain must be in the format 'subdomain.duckdns.org'");
@@ -85,8 +85,9 @@ export async function deployTemplate(params: {
     new Promise((resolve) => {
       log(`Executing: ${stepName}...`);
       const SUDO_PROMPT = "[kubecast-sudo-prompt]";
-      // Back to basic bash execution so the sudo prompt is caught correctly
-      const sudoCmd = `sudo -S -p "${SUDO_PROMPT}" bash -c "${cmd.replace(/"/g, '\\"')}"`;
+      // Use single-quote escaping for the command to prevent shell injection/expansion issues
+      const escapedCmd = cmd.replace(/'/g, "'\\''");
+      const sudoCmd = `sudo -S -p "${SUDO_PROMPT}" bash -c '${escapedCmd}'`;
 
       sshClient.exec(sudoCmd, { pty: true }, (err, stream) => {
         if (err) { error(`SSH Error: ${err.message}`); return resolve(false); }
