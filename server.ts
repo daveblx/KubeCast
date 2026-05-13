@@ -1,6 +1,6 @@
 import express, { Request, Response } from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
+import { fileURLToPath } from "url";
 import { Client } from "ssh2";
 import { WebSocketServer } from "ws";
 import fs from "fs";
@@ -11,6 +11,9 @@ import { rateLimit } from "express-rate-limit";
 import crypto from "crypto";
 import os from "os";
 import { deployTemplate, TemplateConfig } from "./src/deploy/template";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const upload = multer({ dest: "/tmp" });
 
@@ -1101,17 +1104,45 @@ async function startServer() {
     });
   });
 
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
+  const isProd = process.env.NODE_ENV === "production" || 
+                 (typeof process !== 'undefined' && ((process as any).isPackaged || process.versions.electron));
+
+  if (!isProd) {
+    const { createServer } = await import("vite");
+    const vite = await createServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = process.env.DIST_PATH || path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    // In production, prioritize DIST_PATH from main process, fallback to relative path
+    // If bundled as dist/server.js, __dirname is 'dist', so we need '..' to reach assets if structured differently,
+    // but usually in Electron assets are next to the script or in a specific resources folder.
+    const distPath = process.env.DIST_PATH || 
+                    (process.resourcesPath ? path.join(process.resourcesPath, "app.asar", "dist") : path.join(__dirname, "..", "dist"));
+    
+    console.log(`[Production] Serving static files from: ${distPath}`);
+    
+    if (!fs.existsSync(distPath)) {
+      console.error(`[Error] Static folder NOT FOUND at: ${distPath}`);
+    }
+
+    app.use(express.static(distPath, {
+      index: false,
+      setHeaders: (res, path) => {
+        if (path.endsWith(".js")) res.setHeader("Content-Type", "application/javascript");
+        if (path.endsWith(".css")) res.setHeader("Content-Type", "text/css");
+        if (path.endsWith(".html")) res.setHeader("Content-Type", "text/html");
+      }
+    }));
+
     app.get("*", (_req: Request, res: Response) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      const indexPath = path.join(distPath, "index.html");
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        res.status(404).send(`Frontend index.html not found at ${indexPath}`);
+      }
     });
   }
 }
