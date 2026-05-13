@@ -362,15 +362,14 @@ async function startServer() {
     const conn = new Client();
     conn
       .on("ready", () => {
-        const remoteDockerfile = `${workDir}/Dockerfile`;
-        const setupCmd = `mkdir -p ${shellEscape(workDir)} && cat > ${shellEscape(remoteDockerfile)}`;
-        
-        conn.exec(setupCmd, (err, stream) => {
+        conn.exec("bash -s", (err, stream) => {
           if (err) {
             conn.end();
             res.status(500).json({ error: err.message });
           }
 
+          const remoteDockerfile = `${workDir}/Dockerfile`;
+          stream.write(`mkdir -p ${shellEscape(workDir)} && cat > ${shellEscape(remoteDockerfile)}\n`);
           stream.write(dockerfile);
           stream.end();
 
@@ -1007,18 +1006,20 @@ async function startServer() {
             return;
           }
 
-          const finalCommand = requiresSudo ? ["sudo -S -p '' -v", command].join(" && ") : command;
-
           try {
             if (!sshClient || (sshClient as any)._state === 'closed' || (sshClient as any)._state === 'unconnected') {
               throw new Error("SSH connection lost or not established.");
             }
 
-            sshClient.exec(finalCommand, { pty: true }, (err, stream) => {
+            const shellCmd = requiresSudo ? "sudo -S -p '' bash -s" : "bash -s";
+            sshClient.exec(shellCmd, { pty: true }, (err, stream) => {
               if (err) {
                 ws.send(JSON.stringify({ type: "error", data: err.message }));
                 return;
               }
+
+              stream.write(command + "\n");
+              if (!requiresSudo) stream.end();
 
               let sudoSent = false;
               const maybeSendSudo = () => {

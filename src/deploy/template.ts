@@ -85,13 +85,14 @@ export async function deployTemplate(params: {
     new Promise((resolve) => {
       log(`Executing: ${stepName}...`);
       const SUDO_PROMPT = "[kubecast-sudo-prompt]";
-      // Use single-quote escaping for the command to prevent shell injection/expansion issues
-      const escapedCmd = cmd.replace(/'/g, "'\\''");
-      const sudoCmd = `sudo -S -p "${SUDO_PROMPT}" bash -c '${escapedCmd}'`;
+      // Use bash -s to execute the command safely via stdin
+      const shellCmd = `sudo -S -p "${SUDO_PROMPT}" bash -s`;
 
-      sshClient.exec(sudoCmd, { pty: true }, (err, stream) => {
+      sshClient.exec(shellCmd, { pty: true }, (err, stream) => {
         if (err) { error(`SSH Error: ${err.message}`); return resolve(false); }
         
+        stream.write(cmd + "\n");
+
         stream.on("data", (chunk: Buffer) => {
           const text = chunk.toString();
           if (text.includes(SUDO_PROMPT)) {
