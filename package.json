@@ -1,7 +1,7 @@
 {
   "name": "kubecast",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "KubeCast - Kubernetes Management Dashboard",
   "author": "David Blachnitzky",
   "type": "module",
