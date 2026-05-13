@@ -88,14 +88,18 @@ export async function deployTemplate(params: {
       // Use bash -s to execute the command safely via stdin
       const shellCmd = `sudo -S -p "${SUDO_PROMPT}" bash -s`;
 
-      sshClient.exec(shellCmd, { pty: true }, (err, stream) => {
+      sshClient.exec(shellCmd, (err, stream) => {
         if (err) { error(`SSH Error: ${err.message}`); return resolve(false); }
         
+        // Send password first for sudo -S, then the command
+        stream.write(sudoPassword + "\n");
         stream.write(cmd + "\n");
+        stream.end();
 
         stream.on("data", (chunk: Buffer) => {
           const text = chunk.toString();
           if (text.includes(SUDO_PROMPT)) {
+            // Already sent, but handle just in case it prompts again
             stream.write(sudoPassword + "\n");
             return;
           }

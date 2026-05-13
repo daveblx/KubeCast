@@ -88,6 +88,12 @@ function getServerSSHConfig(server: any) {
   return config;
 }
 
+function shellSanitize(text: string, password?: string): string {
+  if (!password) return text;
+  const escaped = password.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(escaped, 'g'), '********');
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -266,7 +272,7 @@ async function startServer() {
             const dbAfter = getDB();
             dbAfter.servers = dbAfter.servers.filter((s: any) => s.id !== req.params.id);
             saveDB(dbAfter);
-            res.json({ success: true, log: output });
+            res.json({ success: true, log: shellSanitize(output, server.password) });
           });
         });
       })
@@ -408,7 +414,11 @@ async function startServer() {
               execStream.on("close", (exitCode: number) => {
                 conn.end();
                 if (fs.existsSync(localTmpPath)) fs.unlinkSync(localTmpPath);
-                res.json({ code: exitCode, output, error: errorStr });
+                res.json({ 
+                  code: exitCode, 
+                  output: shellSanitize(output, server.password), 
+                  error: shellSanitize(errorStr, server.password) 
+                });
               });
             });
           });
@@ -450,7 +460,11 @@ async function startServer() {
           stream.stderr.on("data", (data: Buffer) => (errorStr += data.toString()));
           stream.on("close", (code: number) => {
             conn.end();
-            res.json({ code, output, error: errorStr });
+            res.json({ 
+              code, 
+              output: shellSanitize(output, server.password), 
+              error: shellSanitize(errorStr, server.password) 
+            });
           });
         });
       })
@@ -562,7 +576,11 @@ async function startServer() {
           stream.stderr.on("data", (data: Buffer) => (errorStr += data.toString()));
           stream.on("close", (code: number) => {
             conn.end();
-            res.json({ code, output, error: errorStr });
+            res.json({ 
+              code, 
+              output: shellSanitize(output, server.password), 
+              error: shellSanitize(errorStr, server.password) 
+            });
           });
         });
       })
@@ -872,8 +890,16 @@ async function startServer() {
                 ws.send(JSON.stringify({ type: "error", data: err.message }));
                 return;
               }
+              const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const sanitizers = server.password ? [{ pattern: new RegExp(escape(server.password), 'g'), replacement: '********' }] : [];
+              const sanitize = (text: string): string => {
+                let out = text;
+                for (const s of sanitizers) out = out.replace(s.pattern, s.replacement);
+                return out;
+              };
+
               stream.on("data", (chunk: Buffer) => {
-                ws.send(JSON.stringify({ type: "data", data: chunk.toString() }));
+                ws.send(JSON.stringify({ type: "data", data: sanitize(chunk.toString()) }));
               });
               stream.on("close", () => {
                 ws.send(JSON.stringify({ type: "status", data: "Disconnected" }));
@@ -1012,33 +1038,43 @@ async function startServer() {
             }
 
             const shellCmd = requiresSudo ? "sudo -S -p '' bash -s" : "bash -s";
-            sshClient.exec(shellCmd, { pty: true }, (err, stream) => {
+            sshClient.exec(shellCmd, (err, stream) => {
               if (err) {
                 ws.send(JSON.stringify({ type: "error", data: err.message }));
                 return;
               }
 
+              if (requiresSudo) {
+                stream.write(sudoPassword + "\n");
+              }
               stream.write(command + "\n");
-              if (!requiresSudo) stream.end();
+              stream.end();
 
-              let sudoSent = false;
+              // Password already sent above, but we keep the listener for robustness
+              let sudoSent = requiresSudo;
               const maybeSendSudo = () => {
                 if (!requiresSudo || sudoSent) return;
                 sudoSent = true;
                 stream.write(sudoPassword + "\n");
               };
 
-              maybeSendSudo();
+              const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const sanitizers = sudoPassword ? [{ pattern: new RegExp(escape(sudoPassword), 'g'), replacement: '********' }] : [];
+              const sanitize = (text: string): string => {
+                let out = text;
+                for (const s of sanitizers) out = out.replace(s.pattern, s.replacement);
+                return out;
+              };
 
               stream.on("data", (chunk: Buffer) => {
                 const text = chunk.toString();
                 if (!sudoSent && /password/i.test(text)) maybeSendSudo();
-                ws.send(JSON.stringify({ type: "data", data: text }));
+                ws.send(JSON.stringify({ type: "data", data: sanitize(text) }));
               });
               stream.stderr.on("data", (chunk: Buffer) => {
                 const text = chunk.toString();
                 if (!sudoSent && /password/i.test(text)) maybeSendSudo();
-                ws.send(JSON.stringify({ type: "data", data: text }));
+                ws.send(JSON.stringify({ type: "data", data: sanitize(text) }));
               });
               stream.on("close", (code: number) => {
                 if (code === 0 && connectedServerId) {
